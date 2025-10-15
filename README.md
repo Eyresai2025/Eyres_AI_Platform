@@ -55,3 +55,6 @@ pip install \
   ultralytics==8.3.78 ultralytics-thop==2.0.8 \
   pymongo==4.6.1 pymodbus==2.5.3 tkcalendar==1.6.1 \
   urllib3==1.26.20
+
+## Contributor 
+- [Yerriswamy Chakala](https://github.com/Yerriswamy2001)
