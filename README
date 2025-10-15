@@ -1,15 +1,22 @@
 <div>
-<p align="center">
-  <img src="Media/LOGO-02.png" alt="Company Logo" width="300">
-</p>
+  <img src="Media/LOGO-02.png" alt="Logo" width="200" align="center"/>
 </div>
+<br/>
+<br/>
+<br/>
+<br/>
+<br/>
+<br/>
+<br/>
+<br/>
+<br/>
+<br/>
 <h1 align="center">EyRes.AI – AI Model Training Suite</h1>
+# EyresQC+ TRB GUI Version 1.0 (BETA)
 <p align="center">
   <b>Version 1.0 (BETA)</b><br>
   Unified desktop application for dataset creation and model training
 </p>
-
----
 
 ## Overview
 
@@ -22,9 +29,8 @@ The **AI Model Training Suite** is a desktop application that streamlines the fu
 
 The app provides a consistent dark UI, step progress indicator (Image Capturing → Annotation → Augmentation → Training), and lazy-loading of tools so each module starts fast and independently.
 
----
-
 ## Features
+
 
 - **Camera Workspace**
   - Live preview, basic device info, and capture to project folders
@@ -42,13 +48,15 @@ The app provides a consistent dark UI, step progress indicator (Image Capturing 
   - Clean sidebar with centered labels + helpful tooltips
   - Pathway labels centered under the step circles (including the edge steps)
 
----
+
 
 ## Requirements
 
 - Python 3.9+ (Windows recommended)
 - GPU optional (CUDA if training on GPU)
 - Suggested packages (pin to known-good versions):
+
+###Installation
 
 ```bash
 pip install \
@@ -58,4 +66,21 @@ pip install \
   urllib3==1.26.20
 
 ## Contributor
--[Yerriswamy Chakala](https://github.com/Yerriswamy2001)
+- [Yerriswamy Chakala](https://github.com/Yerriswamy2001)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
