@@ -10,6 +10,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5 import QtCore, QtGui, QtWidgets
 from toasts import ToastManager
+from app_prefs import AppPrefs
 # ---------- Sidebar Button ----------
 class ToolButton(QPushButton):
     def __init__(self, text, icon_path=None,tooltip=None):
@@ -530,9 +531,22 @@ class AspectLogoLabel(QLabel):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.prefs = AppPrefs()  # JSON-backed prefs store
         self.setWindowTitle("AI Model Training Suite")
         self.setGeometry(80, 80, 1200, 800)
         self._build()
+
+        # ---- restore window session + last tool ----
+        self._restore_window_session()
+        last_idx = self.prefs.get_last_tool_index(0)
+        last_idx = max(0, min(last_idx, 3))  # clamp to available pages
+        self.switch_tool(last_idx, _from_restore=True)
+
+        # Optional: let user know we restored the session
+        try:
+            self.toast_info(f"Restored last session: {self._tool_name(last_idx)}", 1400)
+        except Exception:
+            pass
 
     def _build(self):
         central = QWidget(); self.setCentralWidget(central)
@@ -568,13 +582,13 @@ class MainWindow(QMainWindow):
         nv.setContentsMargins(4, 18, 4, 18)
         nv.setSpacing(6)
 
-        buttons = [
+        self._buttons_cfg = [
             ("  Image Capturing ", 0, "Open the camera workspace: connect devices, preview, and record."),
             ("  Annotation Tool ", 1, "Label images (boxes/masks). Saves annotations for training."),
             ("  Augmentation Tool ", 2, "Generate augmented variants of images for robust training."),
             ("  Model Training ", 3, "Configure hyperparameters and run model training."),
         ]
-        for text, idx, tip in buttons:
+        for text, idx, tip in self._buttons_cfg:
             b = ToolButton(text, tooltip=tip)
             b.clicked.connect(lambda _, i=idx: self.switch_tool(i))
             nv.addWidget(b)
@@ -612,29 +626,73 @@ class MainWindow(QMainWindow):
         self.toast_warn    = lambda msg, ms=2500: self.toast_mgr.show(msg, "warning", ms)
         self.toast_error   = lambda msg, ms=2500: self.toast_mgr.show(msg, "error",   ms)
 
-        # initial: step 2 active, step 1 completed
+        # initial visuals (will be overridden by restore)
         self.pathway.set_states(completed=[0], active=1)
-        # optional welcome toast
-        self.toast_success("Welcome to AI Model Training Suite", 1800)
+        self.toast_success("Welcome to AI Model Training Suite", 1200)
 
-    def switch_tool(self, index: int):
+    # ---------- session persistence helpers ----------
+    def _restore_window_session(self):
+        """Restore geometry/state/maximized safely from prefs."""
+        try:
+            geo = self.prefs.get_geometry()
+            if not geo.isEmpty():
+                self.restoreGeometry(geo)
+            st = self.prefs.get_win_state()
+            if not st.isEmpty():
+                self.restoreState(st)
+            if self.prefs.get_maximized(False):
+                self.showMaximized()
+        except Exception:
+            # never crash on bad/old session files
+            pass
+
+    def _save_window_session(self):
+        """Save geometry/state/maximized safely to prefs."""
+        try:
+            self.prefs.set_geometry(self.saveGeometry())
+            self.prefs.set_win_state(self.saveState())
+            self.prefs.set_maximized(self.isMaximized())
+            self.prefs.save()
+        except Exception:
+            pass
+
+    def _tool_name(self, idx: int) -> str:
+        mapping = {0: "Image Capturing", 1: "Annotation Tool", 2: "Augmentation Tool", 3: "Model Training"}
+        return mapping.get(idx, f"Tool {idx}")
+
+    # ---------- behavior ----------
+    def switch_tool(self, index: int, _from_restore: bool=False):
         self.stack.setCurrentIndex(index)
 
         # Activate dynamic loading for specific tools + toast messages
         if index == 0:      # Image Capturing
             self.page_capture.activate()
-            self.toast_info("Opening Camera Workspace…")
+            if not _from_restore:
+                self.toast_info("Opening Camera Workspace…")
         elif index == 1:    # Annotation Tool
             self.page_annot.activate()
-            self.toast_success("Annotation Tool ready.")
+            if not _from_restore:
+                self.toast_success("Annotation Tool ready.")
         elif index == 2:    # Augmentation Tool
             self.page_aug.activate()
-            self.toast_info("Loading Augmentation Tool…")
+            if not _from_restore:
+                self.toast_info("Loading Augmentation Tool…")
         elif index == 3:    # Model Training
-            self.toast_warn("Training feature is in preview.")
+            if not _from_restore:
+                self.toast_warn("Training feature is in preview.")
 
         # auto-progress example
         self.pathway.set_states(completed=list(range(index)), active=min(index, 3))
+
+        # persist last tool (avoid double-write during initial restore)
+        if not _from_restore:
+            self.prefs.set_last_tool_index(index)
+            self.prefs.save()
+
+    # Save session when closing
+    def closeEvent(self, e):
+        self._save_window_session()
+        super().closeEvent(e)
 
 
 # ---------- Global dark palette ----------
