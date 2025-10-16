@@ -9,7 +9,7 @@ from PyQt5.QtGui import (
     QIcon, QPalette, QColor, QPainter, QPen, QFont, QFontMetrics,QPixmap
 )
 from PyQt5 import QtCore, QtGui, QtWidgets
-
+from toasts import ToastManager
 # ---------- Sidebar Button ----------
 class ToolButton(QPushButton):
     def __init__(self, text, icon_path=None,tooltip=None):
@@ -526,7 +526,6 @@ class AspectLogoLabel(QLabel):
             scaled = self._orig.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             super().setPixmap(scaled)
 
-
 # ---------- Main Window ----------
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -548,24 +547,20 @@ class MainWindow(QMainWindow):
         # --- Header box with ONLY logo ---
         header = QFrame()
         header.setFixedHeight(110)
-        # header.setStyleSheet("QFrame{background:#3a4146; border-bottom:2px solid #0d6efd;}")
         hv = QHBoxLayout(header)
-        hv.setContentsMargins(12, 8, 12, 8)   # inner padding around logo
+        hv.setContentsMargins(12, 8, 12, 8)
         hv.setSpacing(0)
 
         logo_label = AspectLogoLabel()
         logo_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
         logo_path = r"E:\Office\Desktop\My files\project files\AI pipline\Media\LOGO-02.png"
         pm = QPixmap(logo_path)
         if not pm.isNull():
-            logo_label.setPixmap(pm)          # AspectLogoLabel keeps aspect ratio
+            logo_label.setPixmap(pm)
         else:
             logo_label.setStyleSheet("background:#2b2f33; border-radius:8px;")
-
-        hv.addWidget(logo_label)              # center-fill logo
+        hv.addWidget(logo_label)
         sv.addWidget(header)
-
 
         # --- Navigation buttons ---
         nav = QFrame()
@@ -584,11 +579,8 @@ class MainWindow(QMainWindow):
             b.clicked.connect(lambda _, i=idx: self.switch_tool(i))
             nv.addWidget(b)
 
-
         nv.addStretch(1)
         sv.addWidget(nav, 1)
-
-        # Add sidebar to main layout
         main.addWidget(side)
 
         # ===== Main area (darker) =====
@@ -601,7 +593,6 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("QStackedWidget{background:#23282d;}")
-        # Create tool pages with dynamic loading capability
         self.page_capture = CameraPlaceholderWidget(self)
         self.page_annot   = AnnotationPlaceholderWidget(self)
         self.page_aug     = AugmentationPlaceholderWidget(self)
@@ -613,24 +604,38 @@ class MainWindow(QMainWindow):
 
         main.addWidget(frame, 1)
 
+        # ===== Toasts (install manager; no overlay widget) =====
+        self.toast_mgr = ToastManager.install(self)
+        # handy shortcuts
+        self.toast_info    = lambda msg, ms=2500: self.toast_mgr.show(msg, "info",    ms)
+        self.toast_success = lambda msg, ms=2500: self.toast_mgr.show(msg, "success", ms)
+        self.toast_warn    = lambda msg, ms=2500: self.toast_mgr.show(msg, "warning", ms)
+        self.toast_error   = lambda msg, ms=2500: self.toast_mgr.show(msg, "error",   ms)
+
         # initial: step 2 active, step 1 completed
         self.pathway.set_states(completed=[0], active=1)
-
+        # optional welcome toast
+        self.toast_success("Welcome to AI Model Training Suite", 1800)
 
     def switch_tool(self, index: int):
         self.stack.setCurrentIndex(index)
-        
-        # Activate dynamic loading for specific tools
-        if index == 0:  # Image Capturing
+
+        # Activate dynamic loading for specific tools + toast messages
+        if index == 0:      # Image Capturing
             self.page_capture.activate()
-        elif index == 1:  # Annotation Tool
+            self.toast_info("Opening Camera Workspace…")
+        elif index == 1:    # Annotation Tool
             self.page_annot.activate()
-        elif index == 2:  # Augmentation Tool
+            self.toast_success("Annotation Tool ready.")
+        elif index == 2:    # Augmentation Tool
             self.page_aug.activate()
-        # Add similar activation for other tools if needed
-        
+            self.toast_info("Loading Augmentation Tool…")
+        elif index == 3:    # Model Training
+            self.toast_warn("Training feature is in preview.")
+
         # auto-progress example
         self.pathway.set_states(completed=list(range(index)), active=min(index, 3))
+
 
 # ---------- Global dark palette ----------
 def apply_dark_theme(app: QApplication):

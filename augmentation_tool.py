@@ -2,6 +2,7 @@ import os, json, random, shutil
 from pathlib import Path
 import cv2
 import numpy as np
+from toasts import ToastManager
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
@@ -1667,12 +1668,16 @@ class GammaPanel(QWidget):
     def _done(self, result):
         count, out_dir = result
         self._log(f"Completed! Processed {count} images.\nSaved in: {out_dir}")
-        QMessageBox.information(self, "Success", f"Processed {count} images.\nSaved in: {out_dir}")
+        # QtWidgets.QMessageBox.information(self, "Success", f"Processed {count} images.\nSaved in: {out_dir}")
+        w = self.window()
+        if hasattr(w, "toast"): w.toast(f"Gamma correction finished: {count} image(s).", "success", 2800)
         self.run_btn.setEnabled(True)
 
     def _err(self, e: str):
         self._log(f"ERROR: {e}")
-        QMessageBox.critical(self, "Error", e)
+        # QMessageBox.critical(self, "Error", e)
+        w = self.window()
+        if hasattr(w, "toast"): w.toast("Gamma correction failed.", "error", 3000)
         self.run_btn.setEnabled(True)
 
 
@@ -1935,6 +1940,7 @@ class GammaCorrectionWindow(QMainWindow):
 class AugmentationWizard(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._toast_mgr = ToastManager(self)
         self.setWindowTitle("Image Augmentation Suite")
         self.setGeometry(100, 100, 1400, 900)
         self.current_page = 0
@@ -1942,6 +1948,10 @@ class AugmentationWizard(QMainWindow):
         self.augmentation_completed = False
         self.setup_ui()
         self.center_and_fit_screen()
+
+    def toast(self, msg: str, kind: str = "info", ms: int = 2500):
+        if hasattr(self, "_toast_mgr"):
+            self._toast_mgr.show(msg, kind, ms)
 
     def center_and_fit_screen(self):
         screen_geometry = QApplication.desktop().availableGeometry()
@@ -2004,6 +2014,9 @@ class AugmentationWizard(QMainWindow):
 
         # --- embedded tool pages (IMPORTANT: embedded=True for Preprocessing) ---
         self.preprocessing_page = PreprocessingPanel(embedded=True)
+        self.preprocessing_page.finished.connect(
+            lambda res: self.toast(f"Preprocessing done: {res[0]} images → {res[1]}", "success", 3200)
+        )
         self.gamma_page = GammaPanel()
 
         # add all pages to the stack
@@ -2174,9 +2187,11 @@ class AugmentationWizard(QMainWindow):
                 return
             self.config.update(self.dataset_page.get_config())
             self.current_page = 1
+            self.toast("Step 2: set your augmentation options.", "info", 1800)
         elif self.current_page == 1:
             self.config.update(self.augmentation_page.get_config())
             self.current_page = 2
+            self.toast("You're ready to start. Click ‘Start Augmentation’.", "info", 2200)
         self.stacked_widget.setCurrentIndex(self.current_page)
         self.update_navigation()
         self.update_sidebar_steps()
@@ -2191,18 +2206,23 @@ class AugmentationWizard(QMainWindow):
     def validate_dataset_setup(self):
         config = self.dataset_page.get_config()
         if not config['input_dir']:
-            QMessageBox.warning(self, "Validation Error", "Please select input directory")
+            self.toast("Please select input directory.", "warn")
+            # QMessageBox.warning(self, "Validation Error", "Please select input directory")
             return False
         if not config['output_dir']:
-            QMessageBox.warning(self, "Validation Error", "Please select output directory")
+            self.toast("Please select output directory.", "warn")
+            # QMessageBox.warning(self, "Validation Error", "Please select output directory")
             return False
         input_dir = Path(config['input_dir'])
         if not input_dir.exists():
-            QMessageBox.warning(self, "Validation Error", "Input directory does not exist")
+            self.toast("Input directory does not exist.", "error")
+            # QMessageBox.warning(self, "Validation Error", "Input directory does not exist")
             return False
+        self.toast("Dataset configuration looks good.", "success", 1800)
         return True
 
     def start_augmentation(self):
+        self.toast("Starting augmentation…", "info")
         self.start_btn.setEnabled(False)
         self.back_btn.setEnabled(False)
         self.progress_page.progress_bar.setValue(0)
@@ -2221,14 +2241,16 @@ class AugmentationWizard(QMainWindow):
         self.start_btn.setEnabled(True)
         self.back_btn.setEnabled(True)
         self.update_navigation()
-        QMessageBox.information(self, "Success", "Augmentation completed successfully!")
+        self.toast("Augmentation completed successfully!", "success", 3000)
+        # QMessageBox.information(self, "Success", "Augmentation completed successfully!")
 
     def augmentation_error(self, error_message):
         self.progress_page.log_message(f"ERROR: {error_message}")
         self.start_btn.setEnabled(True)
         self.back_btn.setEnabled(True)
         self.update_navigation()
-        QMessageBox.critical(self, "Error", f"Augmentation failed:\n{error_message}")
+        self.toast("Augmentation failed. See log for details.", "error", 3500)
+        # QMessageBox.critical(self, "Error", f"Augmentation failed:\n{error_message}")
 
     def finish_augmentation(self):
         self.current_page = 0
@@ -2251,7 +2273,8 @@ class AugmentationWizard(QMainWindow):
         self.stacked_widget.setCurrentIndex(0)
         self.update_navigation()
         self.update_sidebar_steps()
-        QMessageBox.information(self, "Reset Complete", "The wizard has been reset. You can now start a new augmentation process.")
+        self.toast("Wizard reset — start a new augmentation anytime.", "info", 2500)
+        # QMessageBox.information(self, "Reset Complete", "The wizard has been reset. You can now start a new augmentation process.")
 
 
 # ======================= Entry Point ================================

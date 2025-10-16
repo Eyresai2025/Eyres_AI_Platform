@@ -3,7 +3,7 @@ import os, sys, time, ctypes, traceback
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
-
+from toasts import ToastManager
 import numpy as np
 import cv2
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -559,6 +559,7 @@ class StepPreview(QtWidgets.QWidget):
 class CameraWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._toasts = ToastManager.install(self)
         self._worker: Optional[CaptureWorker] = None
         self._saved_paths: List[str] = []
 
@@ -600,6 +601,13 @@ class CameraWidget(QtWidgets.QWidget):
         self.stack.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.step_mode   = StepMode(AREA_ICON_PATH, LINE_ICON_PATH, icon_size=56)
         self.step_devs   = StepDevices()
+        self.step_devs.refresh.clicked.connect(lambda: self._toast("Scanning for cameras…", "info", 1500))
+        self.step_devs.refresh.clicked.connect(
+            lambda: QtCore.QTimer.singleShot(
+                500,
+                lambda: self._toast(self.step_devs.count_lbl.text(), "info", 1800)
+            )
+        )
         self.step_count  = StepCount()
         self.step_folder = StepFolder()
         self.step_capture= StepCapture(self._start_capture, self._stop_capture)
@@ -630,6 +638,25 @@ class CameraWidget(QtWidgets.QWidget):
         self.step_folder.changed.connect(self._update_nav)
         self._update_nav()
 
+    def _toast(self, text: str, kind: str = "info", dur_ms: int = 2500):
+        mgr = ToastManager.instance()
+        if mgr:
+            mgr.show(text, kind=kind, duration_ms=dur_ms)
+
+    def _wire_milestone_toasts(self):
+        """Show small toasts for notable status messages coming from the worker."""
+        if not self._worker:
+            return
+
+        def maybe_toast(msg: str):
+            m = msg.lower()
+            if "=== applied camera settings" in m:
+                self._toast("Camera settings applied.", "success", 1600)
+            if "skipped (no frame)" in m:
+                self._toast("A frame was skipped.", "warning", 1800)
+
+        self._worker.status.connect(maybe_toast)
+
     # ---- flow helpers ----
     def current_step(self)->int: return self.stack.currentIndex()
     def _on_step_clicked(self, idx:int):
@@ -637,7 +664,8 @@ class CameraWidget(QtWidgets.QWidget):
         if idx==cur: return
         if idx>cur and not self._validate(cur): return
         if idx>=5 and not self._saved_paths:
-            QtWidgets.QMessageBox.information(self,"Info","Complete a capture before viewing preview.")
+            # QtWidgets.QMessageBox.information(self,"Info","Complete a capture before viewing preview.")
+            self._toast("Complete a capture before viewing preview.", "warning", 2500)
             return
         self.stack.setCurrentIndex(idx); self._update_nav()
     def _go_back(self):
@@ -669,7 +697,7 @@ class CameraWidget(QtWidgets.QWidget):
         try: self.step_capture.pbar.setValue(0); self.step_capture.log.clear()
         except Exception: pass
         self.stack.setCurrentIndex(0); self._update_nav()
-        QtWidgets.QMessageBox.information(self,"Info","Ready for a new session.")
+        self._toast("Ready for a new session.", "success", 2000)
     def _go_next(self):
         i=self.current_step()
         if not self._validate(i): return
@@ -680,15 +708,18 @@ class CameraWidget(QtWidgets.QWidget):
     def _validate(self, idx:int)->bool:
         if idx==1:
             ok=len(self.step_devs.selected_serials())>0
-            if not ok: QtWidgets.QMessageBox.information(self,"Info","Please select at least one camera.")
+            if not ok:
+                self._toast("Please select at least one camera.", "warning", 2500)
             return ok
         if idx==2:
             ok=self.step_count.value()>=1
-            if not ok: QtWidgets.QMessageBox.information(self,"Info","Image count must be ≥ 1.")
+            if not ok: 
+                self._toast("Image count must be ≥ 1.", "warning", 2500)
             return ok
         if idx==3:
             ok=bool(self.step_folder.value())
-            if not ok: QtWidgets.QMessageBox.information(self,"Info","Please choose a valid save folder.")
+            if not ok: 
+                self._toast("Choose a valid save folder.", "warning", 2500)
             return ok
         return True
     def _update_nav(self):
@@ -710,6 +741,10 @@ class CameraWidget(QtWidgets.QWidget):
         self._worker.status.connect(self.step_capture.on_status)
         self._worker.failed.connect(self.step_capture.on_failed)
         self._worker.finished_ok.connect(self._on_capture_done)
+        cams = len(serials)
+        self._toast(f"Starting capture: {n} image(s) × {cams} camera(s)…", "info", 2500)
+        self._worker.failed.connect(lambda err: self._toast("Capture failed — see log.", "error", 4000))
+        self._wire_milestone_toasts()
         self._worker.start()
     def _stop_capture(self):
         try:
@@ -718,6 +753,8 @@ class CameraWidget(QtWidgets.QWidget):
         except Exception: pass
     def _on_capture_done(self, paths:List[str]):
         self._saved_paths=paths or []
+        count = len(self._saved_paths)
+        self._toast(f"Capture complete — saved {count} file(s).", "success", 3000)
         self.step_preview.set_paths(self._saved_paths)
         self.stack.setCurrentIndex(5); self._update_nav()
     def _show_help(self): SimpleHelpDialog(self).exec_()

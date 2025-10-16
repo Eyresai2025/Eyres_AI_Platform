@@ -4,6 +4,7 @@ import json
 import shutil
 import base64
 from PyQt5 import QtWidgets, QtGui, QtCore, QtPrintSupport
+from toasts import ToastManager
 
 # ==================== ANNOTATION TOOL CLASSES ====================
 
@@ -355,6 +356,7 @@ class ZoomableCanvas(QtWidgets.QScrollArea):
             if hasattr(self.main_window, 'auto_save_annotations'):
                 self.main_window.auto_save_annotations()
             self.update()
+            self.toast(f"Label updated → {new_label}", "success", 1400)
 
     def cancel_operation(self):
         if self.mode == 'polygon':
@@ -687,7 +689,7 @@ class LabelSelectionDialog(QtWidgets.QDialog):
 class AnnotationTool(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+        self._toasts = ToastManager.install(self)
         # Set window size based on parent or default
         if parent:
             self.resize(parent.width() * 0.9, parent.height() * 0.9)
@@ -708,7 +710,11 @@ class AnnotationTool(QtWidgets.QWidget):
         self.existing_labels = set()  # Track all labels used in the session
         
         self.init_ui()
-        
+
+    def toast(self, text: str, kind: str = "info", dur_ms: int = 2500):
+        mgr = ToastManager.instance()
+        if mgr:
+            mgr.show(text, kind=kind, duration_ms=dur_ms)
     def init_ui(self):
         # Create main layout (no central widget for QWidget)
         main_layout = QtWidgets.QHBoxLayout(self)
@@ -1522,6 +1528,9 @@ class AnnotationTool(QtWidgets.QWidget):
             
             self.load_current_image()
             self.update_annotated_count()
+            self.toast(f"Loaded {len(self.images)} image(s).", "success", 1800)
+        else:
+            self.toast("No images found in the selected folder.", "warning", 2500)
 
     def auto_load_existing_annotations(self):
         """Automatically load existing annotations when opening a folder"""
@@ -1601,7 +1610,7 @@ class AnnotationTool(QtWidgets.QWidget):
                                             f"Loaded {len(self.images)} images\n"
                                             f"Found annotations for {len([img for img in self.images if img in self.annotations])} images\n"
                                             f"Found {len(self.existing_labels)} unique labels")
-
+            self.toast(f"Images: {len(self.images)} • With annotations: {len([img for img in self.images if img in self.annotations])} • Labels: {len(self.existing_labels)}", "info", 2800) 
     def load_annotations_from_current_folder(self):
         """Load annotations from JSON files in the current folder"""
         if not self.folder:
@@ -1795,6 +1804,7 @@ class AnnotationTool(QtWidgets.QWidget):
         
         # Show confirmation dialog
         format_name = "JSON" if format_choice == "json" else "XML"
+        self.toast(f"Overwrote {saved_count} {fmt} file(s){' with errors' if error_count else ''}.", "success" if error_count == 0 else "warning", 2200)
         reply = QtWidgets.QMessageBox.question(self, "Confirm Overwrite",
                                             f"This will overwrite all existing annotation files in the current folder as {format_name} format.\n\n"
                                             "Are you sure you want to continue?",
@@ -1908,12 +1918,18 @@ class AnnotationTool(QtWidgets.QWidget):
         
     def clear_annotations(self):
         self.canvas.clear_annotations()
+        self.toast("Cleared all annotations for this image.", "warning", 1600) 
         
     def delete_selected(self):
+        before = len(self.canvas.shapes)
         self.canvas.delete_selected_shape()
+        after = len(self.canvas.shapes)
+        if after < before:
+            self.toast("Deleted selected annotation.", "success", 1400) 
         
     def copy_selected(self):
         self.canvas.copy_selected_shape()
+        self.toast("Pasted annotation.", "success", 1200)
         
     def paste_shape(self):
         self.canvas.paste_shape()
@@ -1983,12 +1999,13 @@ class AnnotationTool(QtWidgets.QWidget):
             if self.save_annotations_to_file(self.images[self.current_index], overwrite=True, format_choice=format_choice):
                 format_name = "JSON" if format_choice == "json" else "XML"
                 QtWidgets.QMessageBox.information(self, "Saved", f"Current annotations saved as {format_name}!")
+                self.toast("Current annotations saved (overwrite).", "success", 1600)
         elif reply == QtWidgets.QMessageBox.No:
             # Save in new folder
             if self.save_annotations_to_file(self.images[self.current_index], overwrite=False, format_choice=format_choice):
                 format_name = "JSON" if format_choice == "json" else "XML"
                 QtWidgets.QMessageBox.information(self, "Saved", f"Current annotations saved as {format_name} in new folder!")
-        # else: Cancel - do nothing
+                self.toast("Current annotations saved to new folder.", "success", 1600)
         
     def save_all(self):
         for i in range(len(self.images)):
@@ -2103,6 +2120,7 @@ class AnnotationTool(QtWidgets.QWidget):
         
         current_time = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd_HH-mm-ss")
         format_ext = "json" if format_choice == "json" else "xml"
+        self.toast(f"Exported {saved_count} {fmt} annotations to folder.", "success", 2200)
         main_annot_folder = os.path.join(self.folder, f"annotations_{format_ext}_{current_time}")
         os.makedirs(main_annot_folder, exist_ok=True)
         
@@ -2386,7 +2404,8 @@ class AnnotationTool(QtWidgets.QWidget):
             if img_path in self.annotations:
                 del self.annotations[img_path]
             self.load_current_image()
-            QtWidgets.QMessageBox.information(self, "Refreshed", "Annotations refreshed from file!")
+            # QtWidgets.QMessageBox.information(self, "Refreshed", "Annotations refreshed from file!")
+            self.toast("Annotations refreshed from file.", "info", 1500)
 
     def initialize_tool(self):
         """Optional initialization method called when widget is loaded"""
