@@ -2113,62 +2113,118 @@ class AnnotationTool(QtWidgets.QWidget):
         dialog.accept()
 
     def final_save_all_annotations(self, dialog):
-        # Ask for save format
         format_choice = self.ask_save_format()
         if format_choice is None:
-            return  # User cancelled
-        
+            # user cancelled
+            try:
+                self.toast("Export cancelled.", "warning", 1800)
+            except Exception:
+                pass
+            return
+
+        # 2) Prepare destination folder (timestamped)
         current_time = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd_HH-mm-ss")
         format_ext = "json" if format_choice == "json" else "xml"
-        self.toast(f"Exported {saved_count} {fmt} annotations to folder.", "success", 2200)
-        main_annot_folder = os.path.join(self.folder, f"annotations_{format_ext}_{current_time}")
+        format_name = "JSON" if format_choice == "json" else "XML"
+
+        base_folder = getattr(self, "folder", None)
+        if not base_folder or not os.path.isdir(base_folder):
+            # Fallback: ask the user where to save if self.folder isn't valid
+            base_folder = QtWidgets.QFileDialog.getExistingDirectory(
+                self, f"Select folder to save {format_name} annotations"
+            )
+            if not base_folder:
+                try:
+                    self.toast("Export cancelled (no folder chosen).", "warning", 1800)
+                except Exception:
+                    pass
+                return
+
+        main_annot_folder = os.path.join(base_folder, f"annotations_{format_ext}_{current_time}")
         os.makedirs(main_annot_folder, exist_ok=True)
-        
+
+        # 3) Iterate and save
         saved_count = 0
         error_count = 0
-        
-        for img_path in self.images:
-            if img_path in self.annotations and self.annotations[img_path]:
-                try:
+
+        images = getattr(self, "images", []) or []
+        ann = getattr(self, "annotations", {}) or {}
+
+        for img_path in images:
+            try:
+                if img_path in ann and ann[img_path]:
                     if format_choice == "json":
                         success = self.save_annotations_as_json(img_path, main_annot_folder, overwrite=False)
                     else:  # xml
                         success = self.save_annotations_as_xml(img_path, main_annot_folder, overwrite=False)
-                    
+
                     if success:
-                        # Copy original image
+                        # Copy original image next to its annotation
                         base_name = os.path.splitext(os.path.basename(img_path))[0]
                         original_extension = os.path.splitext(img_path)[1].lower()
                         image_copy_path = os.path.join(main_annot_folder, f"{base_name}{original_extension}")
-                        shutil.copy2(img_path, image_copy_path)
-                        
+                        try:
+                            shutil.copy2(img_path, image_copy_path)
+                        except Exception as ce:
+                            # copying the image shouldn't block counting the annotation as saved
+                            print(f"[WARN] Could not copy image for {img_path}: {ce}")
                         saved_count += 1
                     else:
                         error_count += 1
-                        
-                except Exception as e:
-                    print(f"Error saving {img_path}: {e}")
-                    error_count += 1
-        
-        self.pending_saves.clear()
-        
-        msg = QtWidgets.QMessageBox(self)
-        msg.setWindowTitle("Save Complete")
-        msg.setIcon(QtWidgets.QMessageBox.Information)
-        
-        format_name = "JSON" if format_choice == "json" else "XML"
-        if error_count == 0:
-            msg.setText(f"✅ Successfully saved {saved_count} {format_name} annotations!")
-            msg.setInformativeText(f"Location: {main_annot_folder}")
+            except Exception as e:
+                print(f"[ERR] Error saving {img_path}: {e}")
+                error_count += 1
+
+        # Clear pending saves if you track them
+        try:
+            self.pending_saves.clear()
+        except Exception:
+            pass
+
+        # 4) Notify (toast + dialog)
+        if saved_count == 0 and error_count == 0:
+            # No eligible items had annotations
+            try:
+                self.toast(f"No {format_name} annotations found to export.", "warning", 2200)
+            except Exception:
+                pass
+            QtWidgets.QMessageBox.information(
+                self, "Nothing to Save",
+                f"No {format_name} annotations were found to export."
+            )
         else:
-            msg.setText(f"✅ Saved {saved_count} {format_name} annotations with {error_count} errors.")
-            msg.setInformativeText(f"Check the console for details.\nLocation: {main_annot_folder}")
-        
-        msg.exec_()
-        
+            if error_count == 0:
+                try:
+                    self.toast(f"Exported {saved_count} {format_name} annotations.", "success", 2200)
+                except Exception:
+                    pass
+                text = f"✅ Successfully saved {saved_count} {format_name} annotations!"
+                info = f"Location: {main_annot_folder}"
+                icon = QtWidgets.QMessageBox.Information
+            else:
+                try:
+                    self.toast(f"Saved {saved_count} {format_name} annotations with {error_count} errors.", "warning", 2600)
+                except Exception:
+                    pass
+                text = f"✅ Saved {saved_count} {format_name} annotations with {error_count} errors."
+                info = f"Check the console for details.\nLocation: {main_annot_folder}"
+                icon = QtWidgets.QMessageBox.Warning
+
+            msg = QtWidgets.QMessageBox(self)
+            msg.setWindowTitle("Save Complete")
+            msg.setIcon(icon)
+            msg.setText(text)
+            msg.setInformativeText(info)
+            msg.exec_()
+
+        # 5) Restore flags and close dialog
         self.final_save_mode = False
         self.auto_save_enabled = True
-        dialog.accept()
+        try:
+            dialog.accept()
+        except Exception:
+            pass
+
     
         
     def save_annotations_to_file(self, img_path, overwrite=False, format_choice="json"):
