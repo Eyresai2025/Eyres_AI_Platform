@@ -2,8 +2,11 @@ from typing import Iterable, List
 import sys, os, importlib
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QStackedWidget, QFrame, QMessageBox,QSizePolicy
+    QLabel, QStackedWidget, QFrame, QMessageBox,QSizePolicy,QSplitter,QToolButton
 )
+from PyQt5.QtCore import QEvent, QTimer, QEasingCurve, QPropertyAnimation, pyqtSlot
+from PyQt5.QtWidgets import QShortcut
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt, QSize, QRect, QPoint
 from PyQt5.QtGui import (
     QIcon, QPalette, QColor, QPainter, QPen, QFont, QFontMetrics,QPixmap
@@ -11,6 +14,8 @@ from PyQt5.QtGui import (
 from PyQt5 import QtCore, QtGui, QtWidgets
 from toasts import ToastManager
 from app_prefs import AppPrefs
+
+
 # ---------- Sidebar Button ----------
 class ToolButton(QPushButton):
     def __init__(self, text, icon_path=None,tooltip=None):
@@ -37,15 +42,9 @@ class ToolButton(QPushButton):
             }
             QPushButton:pressed { background-color: #0d6efd; }
         """)
+
 # ---------- Full-width Pathway Indicator (compact) ----------
 class PathwayIndicator(QWidget):
-    """
-    Compact full-width pathway:
-      • baseline spans the entire widget width (with safe side margins)
-      • progress line up to active step
-      • smaller circles, tighter spacing
-      • labels centered under circles, constrained width to prevent overlap
-    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(74)   # ↓ was 84
@@ -529,11 +528,35 @@ class AspectLogoLabel(QLabel):
 
 # ---------- Main Window ----------
 class MainWindow(QMainWindow):
+    # ---- property used by QPropertyAnimation to change sidebar width smoothly ----
+    def _get_sidebar_width(self) -> int:
+        sizes = self.splitter.sizes() if hasattr(self, "splitter") else []
+        return sizes[0] if sizes else 0
+
+    def _set_sidebar_width(self, w: int) -> None:
+        if not hasattr(self, "splitter"):
+            return
+        sizes = self.splitter.sizes()
+        if not sizes or len(sizes) < 2:
+            self.splitter.setSizes([w, max(0, self.width() - w)])
+            return
+        total = sum(sizes)
+        total = total if total > 0 else max(1, self.width())
+        self.splitter.setSizes([w, max(0, total - w)])
+
+    sidebarWidth = QtCore.pyqtProperty(int, fget=_get_sidebar_width, fset=_set_sidebar_width)
+
     def __init__(self):
         super().__init__()
         self.prefs = AppPrefs()  # JSON-backed prefs store
         self.setWindowTitle("AI Model Training Suite")
         self.setGeometry(80, 80, 1200, 800)
+
+        # --- auto-hide settings ---
+        self._collapsed_width = 200
+        self._anim_ms = 160            
+        self._auto_collapse_ms = 280    
+
         self._build()
 
         # ---- restore window session + last tool ----
@@ -542,34 +565,101 @@ class MainWindow(QMainWindow):
         last_idx = max(0, min(last_idx, 3))  # clamp to available pages
         self.switch_tool(last_idx, _from_restore=True)
 
-        # Optional: let user know we restored the session
         try:
             self.toast_info(f"Restored last session: {self._tool_name(last_idx)}", 1400)
         except Exception:
             pass
 
+    # ---------- sidebar auto-hide helpers ----------
+    def _restore_sidebar(self):
+        """Restore sidebar width (expanded state). Start expanded by default."""
+        try:
+            w = max(180, self.prefs.get_sidebar_width(260))
+        except Exception:
+            w = 260
+        self.splitter.setSizes([w, max(600, self.width() - w)])
+        self._expanded_width = w  # remember target width for future expands
+
+    def _on_splitter_moved(self, pos: int, index: int):
+        """Persist user-resized width only when the sidebar is expanded."""
+        try:
+            sizes = self.splitter.sizes()
+            if sizes and len(sizes) >= 2 and sizes[0] > self._collapsed_width + 2:
+                self._expanded_width = sizes[0]
+                self.prefs.set_sidebar_width(self._expanded_width)
+                self.prefs.save()
+        except Exception:
+            pass
+
+    def _animate_to(self, target_w: int):
+        if not hasattr(self, "_anim"):
+            self._anim = QPropertyAnimation(self, b"sidebarWidth", self)
+        self._anim.stop()
+        self._anim.setDuration(self._anim_ms)
+        self._anim.setStartValue(self._get_sidebar_width())
+        self._anim.setEndValue(target_w)
+        self._anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self._anim.start()
+
+    def _expand_sidebar(self):
+        self._hover_timer.stop()
+        w = max(180, getattr(self, "_expanded_width", self.prefs.get_sidebar_width(260)))
+        self._animate_to(w)
+
+    def _collapse_sidebar(self):
+        self._animate_to(self._collapsed_width)
+
+    def eventFilter(self, obj, ev):
+        # expand on hover-in, collapse shortly after hover-out
+        if obj is self.side:
+            if ev.type() == QEvent.Enter:
+                self._expand_sidebar()
+            elif ev.type() == QEvent.Leave:
+                self._hover_timer.start(self._auto_collapse_ms)
+        return super().eventFilter(obj, ev)
+
+    # ---------- build UI ----------
     def _build(self):
         central = QWidget(); self.setCentralWidget(central)
-        main = QHBoxLayout(central); main.setContentsMargins(0,0,0,0); main.setSpacing(0)
 
-        # ===== Sidebar (dark grey) =====
-        side = QFrame()
-        side.setFixedWidth(260)
-        side.setStyleSheet("QFrame{background-color:#2b2f33; border-right:1px solid #3a3f44;}")
-        sv = QVBoxLayout(side); sv.setContentsMargins(0,0,0,0); sv.setSpacing(0)
+        # top-level layout just holds the splitter
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # --- Header box with ONLY logo ---
+        # === Splitter (horizontal) ===
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setHandleWidth(6)
+        self.splitter.setStyleSheet("""
+            QSplitter::handle { background:#3a3f44; }
+            QSplitter::handle:hover { background:#4b5156; }
+        """)
+        root.addWidget(self.splitter, 1)
+
+        # ===== Sidebar =====
+        self.side = QFrame()
+        self.side.setObjectName("Sidebar")
+        self.side.setMinimumWidth(160)
+        self.side.setMaximumWidth(480)
+        self.side.setStyleSheet("QFrame#Sidebar{background-color:#2b2f33; border-right:1px solid #3a3f44;}")
+        self.side.setMouseTracking(True)     # required so Enter/Leave fire reliably
+        self.side.installEventFilter(self)   # for hover show/hide
+
+        sv = QVBoxLayout(self.side)
+        sv.setContentsMargins(0,0,0,0)
+        sv.setSpacing(0)
+
+        # --- Header: logo only ---
         header = QFrame()
         header.setFixedHeight(110)
         hv = QHBoxLayout(header)
-        hv.setContentsMargins(12, 8, 12, 8)
-        hv.setSpacing(0)
+        hv.setContentsMargins(12, 8, 12, 8); hv.setSpacing(0)
 
         logo_label = AspectLogoLabel()
         logo_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         logo_path = r"E:\Office\Desktop\My files\project files\AI pipline\Media\LOGO-02.png"
         pm = QPixmap(logo_path)
-        if not pm.isNull():
+        if not pm.isNull(): 
             logo_label.setPixmap(pm)
         else:
             logo_label.setStyleSheet("background:#2b2f33; border-radius:8px;")
@@ -579,8 +669,7 @@ class MainWindow(QMainWindow):
         # --- Navigation buttons ---
         nav = QFrame()
         nv = QVBoxLayout(nav)
-        nv.setContentsMargins(4, 18, 4, 18)
-        nv.setSpacing(6)
+        nv.setContentsMargins(4, 18, 4, 18); nv.setSpacing(6)
 
         self._buttons_cfg = [
             ("  Image Capturing ", 0, "Open the camera workspace: connect devices, preview, and record."),
@@ -595,12 +684,12 @@ class MainWindow(QMainWindow):
 
         nv.addStretch(1)
         sv.addWidget(nav, 1)
-        main.addWidget(side)
 
-        # ===== Main area (darker) =====
-        frame = QFrame()
-        frame.setStyleSheet("QFrame{background:#1f2327;}")
-        mv = QVBoxLayout(frame); mv.setContentsMargins(0,0,0,0); mv.setSpacing(0)
+        # ===== Main area =====
+        self.main_frame = QFrame()
+        self.main_frame.setStyleSheet("QFrame{background:#1f2327;}")
+        mv = QVBoxLayout(self.main_frame)
+        mv.setContentsMargins(0,0,0,0); mv.setSpacing(0)
 
         self.pathway = PathwayIndicator()
         mv.addWidget(self.pathway)
@@ -611,24 +700,37 @@ class MainWindow(QMainWindow):
         self.page_annot   = AnnotationPlaceholderWidget(self)
         self.page_aug     = AugmentationPlaceholderWidget(self)
         self.page_train   = TrainingPlaceholderWidget()
-
         for w in [self.page_capture, self.page_annot, self.page_aug, self.page_train]:
             self.stack.addWidget(w)
         mv.addWidget(self.stack, 1)
 
-        main.addWidget(frame, 1)
+        # Put both panes inside the splitter
+        self.splitter.addWidget(self.side)
+        self.splitter.addWidget(self.main_frame)
+        self.splitter.setStretchFactor(0, 0)  # sidebar
+        self.splitter.setStretchFactor(1, 1)  # main
 
-        # ===== Toasts (install manager; no overlay widget) =====
+        # Restore saved sidebar width
+        self._restore_sidebar()
+
+        # ===== Toasts =====
         self.toast_mgr = ToastManager.install(self)
-        # handy shortcuts
         self.toast_info    = lambda msg, ms=2500: self.toast_mgr.show(msg, "info",    ms)
         self.toast_success = lambda msg, ms=2500: self.toast_mgr.show(msg, "success", ms)
         self.toast_warn    = lambda msg, ms=2500: self.toast_mgr.show(msg, "warning", ms)
         self.toast_error   = lambda msg, ms=2500: self.toast_mgr.show(msg, "error",   ms)
 
-        # initial visuals (will be overridden by restore)
+        # initial visuals
         self.pathway.set_states(completed=[0], active=1)
         self.toast_success("Welcome to AI Model Training Suite", 1200)
+
+        # Save width whenever the user drags the handle
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        # timer used to collapse shortly after mouse leaves
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.timeout.connect(self._collapse_sidebar)
 
     # ---------- session persistence helpers ----------
     def _restore_window_session(self):
@@ -643,8 +745,7 @@ class MainWindow(QMainWindow):
             if self.prefs.get_maximized(False):
                 self.showMaximized()
         except Exception:
-            # never crash on bad/old session files
-            pass
+            pass  # never crash on bad/old session files
 
     def _save_window_session(self):
         """Save geometry/state/maximized safely to prefs."""
@@ -693,6 +794,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         self._save_window_session()
         super().closeEvent(e)
+
 
 
 # ---------- Global dark palette ----------
