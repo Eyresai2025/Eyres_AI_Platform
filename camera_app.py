@@ -7,10 +7,67 @@ from toasts import ToastManager
 import numpy as np
 import cv2
 from PyQt5 import QtCore, QtGui, QtWidgets
+from pathlib import Path
+from typing import Optional, Iterable
 
-# ---------- Optional icons ----------
-AREA_ICON_PATH = r"E:\Office\Desktop\My files\project files\AI pipline\Media\camera (1).png"
-LINE_ICON_PATH = r"E:\Office\Desktop\My files\project files\AI pipline\Media\camera.png"
+def _app_base_dir() -> Path:
+    """
+    Root folder of the app (PyInstaller-safe).
+    - From source: folder of the current .py
+    - From PyInstaller EXE: the temporary _MEIPASS dir
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+def _media_dirs() -> list[Path]:
+    """
+    Candidate media directories next to the app.
+    Supports both 'Media' and 'media' names.
+    """
+    base = _app_base_dir()
+    return [base / "Media", base / "media"]
+
+def _find_first_in_media(patterns: Iterable[str]) -> Optional[Path]:
+    """
+    Return the first existing file in any media directory that matches
+    one of the provided filenames/globs. Exact filename wins over glob.
+    """
+    for mdir in _media_dirs():
+        if not mdir.exists():
+            continue
+        # exact name first
+        for name in patterns:
+            p = mdir / name
+            if p.is_file():
+                return p
+        # then globs (e.g., 'camera*.png')
+        for name in patterns:
+            for g in (mdir.glob(name) if any(ch in name for ch in "*?[]") else []):
+                if g.is_file():
+                    return g
+    return None
+
+# ---------- Optional icons (dynamic) ----------
+_area_path = _find_first_in_media([
+    "camera (1).png",          # your current filename
+    "camera_1.png",
+    "camera-1.png",
+    "camera*.png",             # any camera*.png as fallback
+    "*.png", "*.svg", "*.ico"  # last resorts
+])
+_line_path = _find_first_in_media([
+    "camera.png",
+    "camera-plain.png",
+    "camera2.png",
+    "camera*.png",
+    "*.png", "*.svg", "*.ico"
+])
+
+# Keep public names as strings (or empty) because StepMode checks with os.path.exists
+AREA_ICON_PATH = str(_area_path) if _area_path else ""
+LINE_ICON_PATH = str(_line_path) if _line_path else ""
+
 
 # ---------- Help ----------
 HELP_HTML = """

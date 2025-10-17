@@ -5,6 +5,69 @@ import shutil
 import base64
 from PyQt5 import QtWidgets, QtGui, QtCore, QtPrintSupport
 from toasts import ToastManager
+from pathlib import Path
+
+def _app_base_dir() -> Path:
+    """
+    Root folder of the app (PyInstaller-safe).
+    - Source: folder of this file
+    - PyInstaller: _MEIPASS temp folder
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+def _candidate_asset_dirs() -> list[Path]:
+    """
+    Places we’ll search for icons/images.
+    Add or remove as you like.
+    """
+    base = _app_base_dir()
+    return [
+        base,                      # next to the script/exe
+        base / "Media",
+        base / "media",
+        base / "assets",
+        base / "Assets",
+        base / "icons",
+        base.parent / "Media",     # parent/Media (common for repo layouts)
+        base.parent / "assets",
+    ]
+
+def find_asset(*names: str) -> Path | None:
+    """
+    Finds the first existing file among candidate folders and name variants.
+    You can pass multiple name options: find_asset("question.png","help.png")
+    Also supports subpaths like "icons/question.png".
+    """
+    for folder in _candidate_asset_dirs():
+        for name in names:
+            p = (folder / name)
+            if p.is_file():
+                return p
+    return None
+
+def qicon(*names: str) -> QtGui.QIcon | None:
+    """
+    Convenience: returns a QIcon for the first found asset path, else None.
+    """
+    p = find_asset(*names)
+    if p:
+        icon = QtGui.QIcon(str(p))
+        if not icon.isNull():
+            return icon
+    return None
+
+def set_btn_icon(btn: QtWidgets.QPushButton, fallback_text: str, *names: str):
+    """
+    Sets an icon on a QPushButton if found; otherwise sets the fallback text.
+    """
+    icon = qicon(*names)
+    if icon:
+        btn.setIcon(icon)
+        # keep any text already set; call setText explicitly if you want label
+    else:
+        btn.setText(fallback_text)
 
 # ==================== ANNOTATION TOOL CLASSES ====================
 
@@ -728,69 +791,29 @@ class AnnotationTool(QtWidgets.QWidget):
         
         # Help button with icon and text
         help_btn = QtWidgets.QPushButton()
-        help_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\question.png"
-
-        try:
-            if os.path.exists(help_icon_path):
-                help_icon = QtGui.QIcon(help_icon_path)
-                if not help_icon.isNull():
-                    help_btn.setIcon(help_icon)
-                    help_btn.setText(" Help / Instructions")
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Help icon file not found")
-        except Exception as e:
-            print(f"Help icon loading error: {e}")
-            # Fallback to question mark if icon fails
-            help_btn.setText("Help / Instructions")
-        help_btn.setToolTip("View keyboard shortcuts and usage instructions") 
+        set_btn_icon(help_btn, "Help / Instructions", "question.png", "help.png", "icons/question.png")
+        help_btn.setText(" Help / Instructions")
+        help_btn.setToolTip("View keyboard shortcuts and usage instructions")
         help_btn.clicked.connect(self.show_help)
         left_layout.addWidget(help_btn)
+
         
         # Folder controls
         folder_group = QtWidgets.QGroupBox("Folder Operations")
         folder_layout = QtWidgets.QVBoxLayout(folder_group)
         
         self.browse_btn = QtWidgets.QPushButton()
-        folder_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\folder.png"
-
-        try:
-            if os.path.exists(folder_icon_path):
-                folder_icon = QtGui.QIcon(folder_icon_path)
-                if not folder_icon.isNull():
-                    self.browse_btn.setIcon(folder_icon)
-                    self.browse_btn.setText(" Open Image Folder")
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Folder icon file not found")
-        except Exception as e:
-            print(f"Folder icon loading error: {e}")
-            # Fallback to folder symbol if icon fails
-            self.browse_btn.setText("📁 Open Image Folder")
+        set_btn_icon(self.browse_btn, "📁 Open Image Folder", "folder.png", "icons/folder.png")
+        self.browse_btn.setText(" Open Image Folder")
         self.browse_btn.setToolTip("Load only image files from a folder (without annotations)")
         self.browse_btn.clicked.connect(self.browse_folder)
         folder_layout.addWidget(self.browse_btn)
         
         self.browse_with_annotations_btn = QtWidgets.QPushButton()
-        folder_annotations_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\folder.png"
-
-        try:
-            if os.path.exists(folder_annotations_icon_path):
-                folder_annotations_icon = QtGui.QIcon(folder_annotations_icon_path)
-                if not folder_annotations_icon.isNull():
-                    self.browse_with_annotations_btn.setIcon(folder_annotations_icon)
-                    self.browse_with_annotations_btn.setText(" Open Folder with Images & Annotations")
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Folder with annotations icon file not found")
-        except Exception as e:
-            print(f"Folder with annotations icon loading error: {e}")
-            # Fallback to folder symbol if icon fails
-            self.browse_with_annotations_btn.setText("📂 Open Folder with Images & Annotations")
-        self.browse_with_annotations_btn.setToolTip("Load both images and their annotation files from a folder") 
+        set_btn_icon(self.browse_with_annotations_btn, "📂 Open Folder with Images & Annotations",
+                    "folder-annotations.png", "folder.png", "icons/folder.png")
+        self.browse_with_annotations_btn.setText(" Open Folder with Images & Annotations")
+        self.browse_with_annotations_btn.setToolTip("Load both images and their annotation files from a folder")
         self.browse_with_annotations_btn.clicked.connect(self.load_folder_with_annotations)
         folder_layout.addWidget(self.browse_with_annotations_btn)
         
@@ -826,122 +849,41 @@ class AnnotationTool(QtWidgets.QWidget):
         action_grid = QtWidgets.QGridLayout()
         
         self.finish_polygon_btn = QtWidgets.QPushButton("Finish Polygon")
-        finish_polygon_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\Finish.png"
-
-        try:
-            if os.path.exists(finish_polygon_icon_path):
-                finish_polygon_icon = QtGui.QIcon(finish_polygon_icon_path)
-                if not finish_polygon_icon.isNull():
-                    self.finish_polygon_btn.setIcon(finish_polygon_icon)
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Finish polygon icon file not found")
-        except Exception as e:
-            print(f"Finish polygon icon loading error: {e}")
-            self.finish_polygon_btn.setText("Finish Polygon")
+        set_btn_icon(self.finish_polygon_btn, "Finish Polygon", "Finish.png", "finish.png", "icons/finish.png")
         self.finish_polygon_btn.setToolTip("Complete the current polygon (Right-click also works)")
         self.finish_polygon_btn.clicked.connect(self.finish_polygon)
         action_grid.addWidget(self.finish_polygon_btn, 0, 0)
         
         self.clear_btn = QtWidgets.QPushButton("Clear Annotations")
-        clear_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\clear.png"
-        try:
-            if os.path.exists(clear_icon_path):
-                clear_icon = QtGui.QIcon(clear_icon_path)
-                if not clear_icon.isNull():
-                    self.clear_btn.setIcon(clear_icon)
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Clear icon file not found")
-        except Exception as e:
-            print(f"Clear icon loading error: {e}")
-            self.clear_btn.setText("Clear Annotations")
+        set_btn_icon(self.clear_btn, "Clear Annotations", "clear.png", "trash.png", "icons/clear.png")
         self.clear_btn.setToolTip("Remove all annotations from the current image")
         self.clear_btn.clicked.connect(self.clear_annotations)
         action_grid.addWidget(self.clear_btn, 0, 1)
         
         self.edit_label_btn = QtWidgets.QPushButton()
-        edit_label_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\edit-image.png"
-
-        try:
-            if os.path.exists(edit_label_icon_path):
-                edit_label_icon = QtGui.QIcon(edit_label_icon_path)
-                if not edit_label_icon.isNull():
-                    self.edit_label_btn.setIcon(edit_label_icon)
-                    self.edit_label_btn.setText(" Edit Label")
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Edit label icon file not found")
-        except Exception as e:
-            print(f"Edit label icon loading error: {e}")
-            self.edit_label_btn.setText("✏️ Edit Label")
-
+        set_btn_icon(self.edit_label_btn, "✏️ Edit Label", "edit-image.png", "edit.png", "icons/edit.png")
+        self.edit_label_btn.setText(" Edit Label")
         self.edit_label_btn.clicked.connect(self.edit_selected_label)
         self.edit_label_btn.setToolTip("Edit selected annotation label (E)")
         action_grid.addWidget(self.edit_label_btn, 1, 0)
         
         self.delete_btn = QtWidgets.QPushButton()
-        delete_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\delete.png"
-
-        try:
-            if os.path.exists(delete_icon_path):
-                delete_icon = QtGui.QIcon(delete_icon_path)
-                if not delete_icon.isNull():
-                    self.delete_btn.setIcon(delete_icon)
-                    self.delete_btn.setText(" Delete Selected")
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Delete icon file not found")
-        except Exception as e:
-            print(f"Delete icon loading error: {e}")
-            self.delete_btn.setText("🗑️ Delete Selected")
-
+        set_btn_icon(self.delete_btn, "🗑️ Delete Selected", "delete.png", "trash.png", "icons/delete.png")
+        self.delete_btn.setText(" Delete Selected")
         self.delete_btn.setToolTip("Delete selected annotation (Delete or Ctrl+D)")
         self.delete_btn.clicked.connect(self.delete_selected)
         action_grid.addWidget(self.delete_btn, 1, 1)
         
         self.copy_btn = QtWidgets.QPushButton()
-        copy_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\copy.png"
-
-        try:
-            if os.path.exists(copy_icon_path):
-                copy_icon = QtGui.QIcon(copy_icon_path)
-                if not copy_icon.isNull():
-                    self.copy_btn.setIcon(copy_icon)
-                    self.copy_btn.setText(" Copy")
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Copy icon file not found")
-        except Exception as e:
-            print(f"Copy icon loading error: {e}")
-            self.copy_btn.setText("📋 Copy")
-
+        set_btn_icon(self.copy_btn, "📋 Copy", "copy.png", "icons/copy.png")
+        self.copy_btn.setText(" Copy")
         self.copy_btn.setToolTip("Copy selected annotation (Ctrl+C)")
         self.copy_btn.clicked.connect(self.copy_selected)
         action_grid.addWidget(self.copy_btn, 2, 0)
 
         self.paste_btn = QtWidgets.QPushButton()
-        paste_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\paste.png"
-
-        try:
-            if os.path.exists(paste_icon_path):
-                paste_icon = QtGui.QIcon(paste_icon_path)
-                if not paste_icon.isNull():
-                    self.paste_btn.setIcon(paste_icon)
-                    self.paste_btn.setText(" Paste")
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Paste icon file not found")
-        except Exception as e:
-            print(f"Paste icon loading error: {e}")
-            self.paste_btn.setText("📎 Paste")
-
+        set_btn_icon(self.paste_btn, "📎 Paste", "paste.png", "icons/paste.png")
+        self.paste_btn.setText(" Paste")
         self.paste_btn.setToolTip("Paste copied annotation (Ctrl+V)")
         self.paste_btn.clicked.connect(self.paste_shape)
         action_grid.addWidget(self.paste_btn, 2, 1)
@@ -955,59 +897,19 @@ class AnnotationTool(QtWidgets.QWidget):
         zoom_layout = QtWidgets.QHBoxLayout(zoom_group)
         
         self.zoom_in_btn = QtWidgets.QPushButton("Zoom In")
-        zoom_in_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\Zoomin.png"
-
-        try:
-            if os.path.exists(zoom_in_icon_path):
-                zoom_in_icon = QtGui.QIcon(zoom_in_icon_path)
-                if not zoom_in_icon.isNull():
-                    self.zoom_in_btn.setIcon(zoom_in_icon)
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Zoom in icon file not found")
-        except Exception as e:
-            print(f"Zoom in icon loading error: {e}")
-            self.zoom_in_btn.setText("Zoom In")
+        set_btn_icon(self.zoom_in_btn, "Zoom In", "Zoomin.png", "zoom-in.png", "icons/zoom-in.png")
         self.zoom_in_btn.setToolTip("Zoom in on the image (Ctrl+Mouse Wheel Up)")
         self.zoom_in_btn.clicked.connect(self.zoom_in)
         zoom_layout.addWidget(self.zoom_in_btn)
         
         self.zoom_out_btn = QtWidgets.QPushButton("Zoom Out")
-        zoom_out_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\Zoomout.png"
-
-        try:
-            if os.path.exists(zoom_out_icon_path):
-                zoom_out_icon = QtGui.QIcon(zoom_out_icon_path)
-                if not zoom_out_icon.isNull():
-                    self.zoom_out_btn.setIcon(zoom_out_icon)
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Zoom out icon file not found")
-        except Exception as e:
-            print(f"Zoom out icon loading error: {e}")
-            self.zoom_out_btn.setText("Zoom Out")
+        set_btn_icon(self.zoom_out_btn, "Zoom Out", "Zoomout.png", "zoom-out.png", "icons/zoom-out.png")
         self.zoom_out_btn.setToolTip("Zoom out on the image (Ctrl+Mouse Wheel Down)")
         self.zoom_out_btn.clicked.connect(self.zoom_out)
         zoom_layout.addWidget(self.zoom_out_btn)
         
         self.fit_btn = QtWidgets.QPushButton("Window")
-        fit_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\window.png"
-
-        try:
-            if os.path.exists(fit_icon_path):
-                fit_icon = QtGui.QIcon(fit_icon_path)
-                if not fit_icon.isNull():
-                    self.fit_btn.setIcon(fit_icon)
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Fit to window icon file not found")
-        except Exception as e:
-            print(f"Fit to window icon loading error: {e}")
-            self.fit_btn.setText("Window")
-
+        set_btn_icon(self.fit_btn, "Window", "window.png", "fit.png", "icons/window.png")
         self.fit_btn.clicked.connect(self.fit_to_window)
         self.fit_btn.setToolTip("Fit image to window size")
         zoom_layout.addWidget(self.fit_btn)
@@ -1019,39 +921,14 @@ class AnnotationTool(QtWidgets.QWidget):
         nav_layout = QtWidgets.QHBoxLayout(nav_group)
 
         self.prev_btn = QtWidgets.QPushButton()
-        prev_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\back.png"
-        try:
-            if os.path.exists(prev_icon_path):
-                prev_icon = QtGui.QIcon(prev_icon_path)
-                if not prev_icon.isNull():
-                    self.prev_btn.setIcon(prev_icon)
-                    self.prev_btn.setText(" Previous")
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Previous icon file not found")
-        except Exception as e:
-            print(f"Previous icon loading error: {e}")
-            self.prev_btn.setText("⬅ Previous")
+        set_btn_icon(self.prev_btn, "⬅ Previous", "back.png", "prev.png", "icons/back.png")
+        self.prev_btn.setText(" Previous")
         self.prev_btn.setToolTip("Go to previous image (A or Left Arrow)")
         self.prev_btn.clicked.connect(self.prev_image)
         nav_layout.addWidget(self.prev_btn)
 
         self.next_btn = QtWidgets.QPushButton("Next")
-        next_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\image.png" 
-
-        try:
-            if os.path.exists(next_icon_path):
-                next_icon = QtGui.QIcon(next_icon_path)
-                if not next_icon.isNull():
-                    self.next_btn.setIcon(next_icon)
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Next icon file not found")
-        except Exception as e:
-            print(f"Next icon loading error: {e}")
-            self.next_btn.setText("Next ➡")
+        set_btn_icon(self.next_btn, "Next ➡", "image.png", "next.png", "icons/next.png")
         self.next_btn.setToolTip("Go to next image (D or Right Arrow)")
         self.next_btn.clicked.connect(self.next_image)
         nav_layout.addWidget(self.next_btn)
@@ -1063,60 +940,20 @@ class AnnotationTool(QtWidgets.QWidget):
         save_layout = QtWidgets.QVBoxLayout(save_group)
 
         self.save_current_btn = QtWidgets.QPushButton("Save Current")
-        save_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\save.png"
-
-        try:
-            if os.path.exists(save_icon_path):
-                save_icon = QtGui.QIcon(save_icon_path)
-                if not save_icon.isNull():
-                    self.save_current_btn.setIcon(save_icon)
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Save icon file not found")
-        except Exception as e:
-            print(f"Save icon loading error: {e}")
-            self.save_current_btn.setText("💾 Save Current")
+        set_btn_icon(self.save_current_btn, "💾 Save Current", "save.png", "icons/save.png")
         self.save_current_btn.setToolTip("Save annotations for current image only")
         self.save_current_btn.clicked.connect(self.save_current)
         save_layout.addWidget(self.save_current_btn)
 
         self.save_all_btn = QtWidgets.QPushButton("Final Save & Verify")
-        save_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\save.png" 
-
-        try:
-            if os.path.exists(save_icon_path):
-                save_icon = QtGui.QIcon(save_icon_path)
-                if not save_icon.isNull():
-                    self.save_all_btn.setIcon(save_icon)
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Save icon file not found")
-        except Exception as e:
-            print(f"Save icon loading error: {e}")
-            self.save_all_btn.setText("✅ Final Save & Verify")
+        set_btn_icon(self.save_all_btn, "✅ Final Save & Verify", "save.png", "check.png", "icons/save.png")
         self.save_all_btn.setToolTip("Review all annotations before final export to new folder")
         self.save_all_btn.clicked.connect(self.save_all)
         save_layout.addWidget(self.save_all_btn)
 
         self.overwrite_btn = QtWidgets.QPushButton()
-        overwrite_icon_path = r"E:\Office\Desktop\My files\project files\Apollo_Streamlit\overwrite.png"
-
-        try:
-            if os.path.exists(overwrite_icon_path):
-                overwrite_icon = QtGui.QIcon(overwrite_icon_path)
-                if not overwrite_icon.isNull():
-                    self.overwrite_btn.setIcon(overwrite_icon)
-                    self.overwrite_btn.setText(" Overwrite Existing Files")
-                else:
-                    raise Exception("Invalid icon file")
-            else:
-                raise Exception("Overwrite icon file not found")
-        except Exception as e:
-            print(f"Overwrite icon loading error: {e}")
-            self.overwrite_btn.setText("🔄 Overwrite Existing Files")
-
+        set_btn_icon(self.overwrite_btn, "🔄 Overwrite Existing Files", "overwrite.png", "refresh.png", "icons/overwrite.png")
+        self.overwrite_btn.setText(" Overwrite Existing Files")
         self.overwrite_btn.clicked.connect(self.save_and_overwrite)
         self.overwrite_btn.setToolTip("Overwrite existing annotation files in current folder")
         save_layout.addWidget(self.overwrite_btn)

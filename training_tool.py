@@ -943,12 +943,18 @@ class StepTrain(QtWidgets.QWidget):
             border-radius:11px; padding:1px 10px; font-weight:700; font-size:12px;
         }
 
-        QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-            background: rgba(15,23,42,0.8); border:2px solid #334155; border-radius:8px; padding:10px 14px; color:#f1f5f9;
+       QLineEdit, QComboBox {
+            background: rgba(15,23,42,0.8);
+            border:2px solid #334155;
+            border-radius:8px;
+            padding:10px 14px;
+            color:#f1f5f9;
         }
         QToolButton { background: rgba(14,165,233,0.1); color:#d6f1ff; border:1px solid #0ea5e9; border-radius:8px; padding:8px 12px; }
         QToolButton:hover { background: rgba(14,165,233,0.2); }
-        QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color:#0ea5e9; }
+        /* keep focus styling only for the widgets we still style */
+        QLineEdit:focus, QComboBox:focus { border-color:#0ea5e9; }
+
 
         QPlainTextEdit#console { background: #0b1220; border:1px solid #223; border-radius:10px; color:#e5e7eb; font-family: Consolas, 'Fira Code', monospace; font-size: 12px; padding: 8px; }
         """"""
@@ -1438,10 +1444,15 @@ class MainWindow(QtWidgets.QMainWindow):
         QWidget#modeCard QLabel#cardTitle { color:#ffffff; background: transparent; }  /* <- force transparent */
 
         /* Inputs */
-        QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {
-            background:#0b1220; border:2px solid #334155; border-radius:8px; padding:8px 12px; color:#f1f5f9;
+       QLineEdit, QComboBox {
+            background:#0b1220;
+            border:2px solid #334155;
+            border-radius:8px;
+            padding:8px 12px;
+            color:#f1f5f9;
         }
-        QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QComboBox:focus { border-color:#0ea5e9; }
+        QLineEdit:focus, QComboBox:focus { border-color:#0ea5e9; }
+
 
         QPlainTextEdit#console { background:#0b1220; border:1px solid #223; border-radius:10px; color:#e5e7eb; font-family:Consolas,'Fira Code',monospace; font-size:12px; padding:8px; }
         """)

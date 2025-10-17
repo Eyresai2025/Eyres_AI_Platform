@@ -14,7 +14,33 @@ from PyQt5.QtGui import (
 from PyQt5 import QtCore, QtGui, QtWidgets
 from toasts import ToastManager
 from app_prefs import AppPrefs
+from pathlib import Path
 
+
+def _app_base_dir() -> Path:
+    # Works both when running from source and from a PyInstaller EXE
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        return Path(sys._MEIPASS)  # PyInstaller temp dir
+    return Path(__file__).resolve().parent
+
+def _find_logo() -> Path | None:
+    media = _app_base_dir() / "Media"
+    if not media.exists():
+        return None
+
+    # Try common filenames first
+    preferred = ["LOGO-02.png", "logo.png", "Logo.png", "logo@2x.png"]
+    for name in preferred:
+        p = media / name
+        if p.is_file():
+            return p
+
+    # Otherwise pick the first image in Media
+    for ext in ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.webp"):
+        files = list(media.glob(ext))
+        if files:
+            return files[0]
+    return None
 
 # ---------- Sidebar Button ----------
 class ToolButton(QPushButton):
@@ -796,12 +822,17 @@ class MainWindow(QMainWindow):
 
         logo_label = AspectLogoLabel()
         logo_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        logo_path = r"E:\Office\Desktop\My files\project files\AI pipline\Media\LOGO-02.png"
-        pm = QPixmap(logo_path)
-        if not pm.isNull(): 
-            logo_label.setPixmap(pm)
+
+        logo_file = _find_logo()
+        if logo_file is not None:
+            pm = QPixmap(str(logo_file))
+            if not pm.isNull():
+                logo_label.setPixmap(pm)
+            else:
+                logo_label.setStyleSheet("background:#2b2f33; border-radius:8px;")
         else:
             logo_label.setStyleSheet("background:#2b2f33; border-radius:8px;")
+
         hv.addWidget(logo_label)
         sv.addWidget(header)
 
