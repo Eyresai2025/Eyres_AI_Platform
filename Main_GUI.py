@@ -502,13 +502,152 @@ class AugmentationPlaceholderWidget(QtWidgets.QWidget):
         """Called when this tool becomes inactive"""
         pass
 
-class TrainingPlaceholderWidget(QWidget):
+class TrainingPlaceholderWidget(QtWidgets.QWidget):
+    """
+    Dynamically loads training_tool and embeds it in the main GUI.
+    Supports either:
+      - training_tool.TrainingTool (QWidget), or
+      - training_tool.MainWindow (QMainWindow)  -> embeds its centralWidget
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
-        v = QVBoxLayout(self); v.setAlignment(Qt.AlignCenter)
-        lab = QLabel("🔄 Loading Training Tool...")
-        lab.setStyleSheet("color:#adb5bd; font-size:18px; font-style:italic;")
-        v.addWidget(lab)
+        self.parent_window = parent
+        self._train_window = None   # if QMainWindow
+        self._embedded = None       # QWidget we actually show
+        self.is_loaded = False
+
+        self.setObjectName("TrainingHost")
+        v = QtWidgets.QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        # lightweight loading UI
+        self._loading_box = QtWidgets.QWidget()
+        lbx = QtWidgets.QVBoxLayout(self._loading_box)
+        lbx.setContentsMargins(0, 40, 0, 0)
+        lbx.setSpacing(10)
+
+        self.loading_label = QtWidgets.QLabel("Loading Training Tool...")
+        self.loading_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.loading_label.setStyleSheet("color:#adb5bd; font-size:16px; font-style:italic;")
+
+        self.load_button = QtWidgets.QPushButton("Launch Training Tool")
+        self.load_button.setFixedHeight(38)
+        self.load_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.load_button.setStyleSheet("""
+            QPushButton { background:#28a745; color:#fff; border:none; border-radius:8px; font-weight:700; padding:8px 18px; }
+            QPushButton:hover { background:#218838; }
+        """)
+        self.load_button.clicked.connect(self.load_training_tool)
+
+        lbx.addWidget(self.loading_label, 0, QtCore.Qt.AlignCenter)
+        lbx.addWidget(self.load_button, 0, QtCore.Qt.AlignCenter)
+
+        v.addWidget(self._loading_box)
+
+    def activate(self):
+        if not self.is_loaded:
+            self.load_training_tool()
+
+    def deactivate(self):
+        pass
+
+    def load_training_tool(self):
+        try:
+            here = os.path.dirname(__file__)
+            if here not in sys.path:
+                sys.path.append(here)
+
+            mod = importlib.import_module("training_tool")
+
+            # Try these in order
+            candidate_names = ["TrainingTool", "TrainingWizard", "MainWindow"]
+
+            ToolClass = None
+            for name in candidate_names:
+                if hasattr(mod, name):
+                    ToolClass = getattr(mod, name)
+                    break
+            if ToolClass is None:
+                raise ImportError("Could not find any of: " + ", ".join(f"training_tool.{n}" for n in candidate_names))
+
+            # Instantiate (with or without parent)
+            try:
+                obj = ToolClass(parent=None)
+            except TypeError:
+                obj = ToolClass()
+
+            central = None
+            # If it's a QMainWindow, embed its central widget
+            if isinstance(obj, QtWidgets.QMainWindow) and hasattr(obj, "centralWidget"):
+                central = obj.centralWidget() if callable(obj.centralWidget) else None
+                self._train_window = obj
+                self._train_window.hide()
+                if central is None:
+                    central = QtWidgets.QWidget()
+                    self._train_window.setCentralWidget(central)
+
+                self._embedded = central
+                self._embedded.setParent(self)
+                self._embedded.setContentsMargins(0, 0, 0, 0)
+
+                # copy palette/stylesheet for visual parity
+                self._embedded.setPalette(self._train_window.palette())
+                if self._train_window.styleSheet():
+                    self._embedded.setStyleSheet(self._train_window.styleSheet())
+
+                # optional hook if user defined it
+                if hasattr(self._train_window, "initialize_tool"):
+                    try:
+                        self._train_window.initialize_tool()
+                    except Exception as e:
+                        print(f"[TrainHost] initialize_tool error: {e}")
+
+            # If it's already a QWidget, embed directly
+            elif isinstance(obj, QtWidgets.QWidget):
+                self._embedded = obj
+                self._embedded.setParent(self)
+                self._embedded.setContentsMargins(0, 0, 0, 0)
+                if hasattr(self._embedded, "initialize_tool"):
+                    try:
+                        self._embedded.initialize_tool()
+                    except Exception as e:
+                        print(f"[TrainHost] initialize_tool error: {e}")
+            else:
+                raise TypeError("Loaded training tool is neither QMainWindow nor QWidget")
+
+            # swap loading box for embedded widget
+            host_layout = self.layout()
+            host_layout.removeWidget(self._loading_box)
+            self._loading_box.hide()
+            self._loading_box.setParent(None)
+            host_layout.addWidget(self._embedded)
+
+            self._embedded.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+            # Paint a solid background on the host (same as training UI) to kill banding
+            self.setAutoFillBackground(True)
+            self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+            pal = self.palette()
+            pal.setColor(QtGui.QPalette.Window, QtGui.QColor("#0f1419"))
+            self.setPalette(pal)
+
+            # Let the embedded content stay transparent so it sits over our solid base
+            self._embedded.setAutoFillBackground(False)
+            self._embedded.setAttribute(QtCore.Qt.WA_StyledBackground, False)
+
+            self.is_loaded = True
+
+        except Exception as e:
+            print(f"❌ Failed to load training tool: {e}")
+            self.loading_label.setText(f"❌ Error loading training tool:\n{str(e)}")
+            self.load_button.show()
+            QtWidgets.QMessageBox.critical(self, "Loading Error", f"Failed to load training tool:\n{str(e)}")
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self._embedded:
+            self._embedded.resize(self.size())
+
 
 class AspectLogoLabel(QLabel):
     def __init__(self, parent=None):
@@ -700,6 +839,9 @@ class MainWindow(QMainWindow):
         self.page_annot   = AnnotationPlaceholderWidget(self)
         self.page_aug     = AugmentationPlaceholderWidget(self)
         self.page_train   = TrainingPlaceholderWidget()
+        self.page_train.setObjectName("TrainingHostPage")
+        self.page_train.setAutoFillBackground(True)
+        self.page_train.setStyleSheet("#TrainingHostPage { background: #0f1419; }")
         for w in [self.page_capture, self.page_annot, self.page_aug, self.page_train]:
             self.stack.addWidget(w)
         mv.addWidget(self.stack, 1)
@@ -778,7 +920,8 @@ class MainWindow(QMainWindow):
             self.page_aug.activate()
             if not _from_restore:
                 self.toast_info("Loading Augmentation Tool…")
-        elif index == 3:    # Model Training
+        elif index == 3:
+            self.page_train.activate()   # Model Training
             if not _from_restore:
                 self.toast_warn("Training feature is in preview.")
 
