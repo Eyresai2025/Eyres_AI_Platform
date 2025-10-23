@@ -419,7 +419,6 @@ class ZoomableCanvas(QtWidgets.QScrollArea):
             if hasattr(self.main_window, 'auto_save_annotations'):
                 self.main_window.auto_save_annotations()
             self.update()
-            self.toast(f"Label updated → {new_label}", "success", 1400)
 
     def cancel_operation(self):
         if self.mode == 'polygon':

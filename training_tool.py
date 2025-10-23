@@ -3,6 +3,50 @@ import sys, os
 from typing import List, Tuple
 from PyQt5 import QtCore, QtGui, QtWidgets
 import shutil
+
+# --- Dynamic path helpers (PyInstaller-friendly) ---
+from pathlib import Path
+
+def app_base_dir() -> Path:
+    """Root folder of the app (PyInstaller-safe)."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+def candidate_dirs() -> list[Path]:
+    """Places to search for shipped assets/models/datasets next to the app."""
+    base = app_base_dir()
+    return [
+        base,
+        base / "assets",
+        base / "Assets",
+        base / "models",
+        base / "Models",
+        base / "weights",
+        base / "Weights",
+        base / "data",
+        base / "Data",
+        base.parent / "assets",
+        base.parent / "models",
+        base.parent / "data",
+    ]
+
+def find_first_file(*names_or_relpaths: str) -> Path | None:
+    """
+    Find the first existing file by trying each candidate dir combined with the given
+    names or relative paths. You can pass multiple names to allow fallbacks.
+    """
+    for folder in candidate_dirs():
+        for name in names_or_relpaths:
+            p = (folder / name)
+            if p.is_file():
+                return p
+    return None
+
+def fwd(p: Path | str) -> str:
+    """Normalize to forward slashes (Ultralytics-friendly on Windows too)."""
+    return str(p).replace("\\", "/")
+
 # ---------- ultra-short help ----------
 HELP_HTML = """
 <div id="helpRoot">
@@ -15,7 +59,6 @@ HELP_HTML = """
 </div>
 """
 # --------------------------------------Helpers---------------------------------
-
 
 
 class SimpleHelpDialog(QtWidgets.QDialog):
@@ -37,6 +80,7 @@ class SimpleHelpDialog(QtWidgets.QDialog):
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
         btns.rejected.connect(self.reject)
         v.addWidget(btns, 0, QtCore.Qt.AlignRight)
+
 # ================================== new index button ==========================================
 class DatasetMergeDialog(QtWidgets.QDialog):
     """
@@ -338,7 +382,7 @@ class StepModel(QtWidgets.QWidget):
         subtitle = QtWidgets.QLabel("Choose one model to proceed")
         subtitle.setObjectName("pageSubtitle")
         subtitle.setAutoFillBackground(False)
-        subtitle.setStyleSheet("background: transparent;font-size: 13px;")  
+        subtitle.setStyleSheet("background: transparent;font-size: 13px;")
 
         grid = QtWidgets.QGridLayout()
         grid.setHorizontalSpacing(20)
@@ -387,11 +431,9 @@ class StepModel(QtWidgets.QWidget):
                         ev.accept()
                     else:
                         ev.ignore()
-                    # IMPORTANT: do not return a tuple; returning None is fine.
                 return handler
 
             card.mouseReleaseEvent = _make_click_handler(on_card_clicked)  # type: ignore
-
 
             grid.addWidget(card, r, c)
             self._cards.append((card, rb, label_text))
@@ -439,13 +481,18 @@ class StepModel(QtWidgets.QWidget):
         return "seg"
 
 
-
 # ------------------------------ Train Config Page -------------------------------------------
 class StepTrain(QtWidgets.QWidget):
     changed = QtCore.pyqtSignal()
 
-    DEFAULT_SEG_PATH = r"C:\Users\Hi\OneDrive - radometech.com\Desktop\training\yolo11s-seg.pt"
-    DEFAULT_DET_PATH = r"C:\Users\Hi\OneDrive - radometech.com\Desktop\training\yolo11n.pt"
+    # Try common filenames first; fall back to empty if not found
+    DEFAULT_SEG_PATH = fwd(find_first_file(
+        "yolo11s-seg.pt", "yolo11s-seg/yolo11s-seg.pt", "seg.pt"
+    ) or Path(""))
+
+    DEFAULT_DET_PATH = fwd(find_first_file(
+        "yolo11n.pt", "yolo11n/yolo11n.pt", "det.pt"
+    ) or Path(""))
 
     def __init__(self, mode: str = "seg"):
         super().__init__()
@@ -552,7 +599,6 @@ class StepTrain(QtWidgets.QWidget):
         # Always land on Dataset
         self.nav.setCurrentRow(0)
 
-
     # ===== Page builders =====
     def _card(self) -> QtWidgets.QFrame:
         f = QtWidgets.QFrame()
@@ -617,8 +663,8 @@ class StepTrain(QtWidgets.QWidget):
         self.data_edit.setStyleSheet("""
             QLineEdit {
                 color:#ffffff;
-                font-size:16px;                   /* slightly smaller text */
-                padding: 8px 12px;                /* tighter padding */
+                font-size:16px;
+                padding: 8px 12px;
             }
             QLineEdit::placeholder { color: rgba(255,255,255,0.7); }
         """)
@@ -642,8 +688,7 @@ class StepTrain(QtWidgets.QWidget):
 
         lay.addRow(ver_label, self.ver_combo)
         lay.addRow(data_label, self._wrap(hl))
-        # Row 3: button directly below data.yaml (left-aligned, small top gap)
-        # Button under the data.yaml LABEL (left column)
+
         merge_btn = QtWidgets.QPushButton("Merge / Update dataset…")
         merge_btn.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         merge_btn.setMinimumHeight(40)
@@ -659,22 +704,17 @@ class StepTrain(QtWidgets.QWidget):
         """)
         merge_btn.clicked.connect(self._open_merge_dialog)
 
-        # a tiny top margin so it's just below the chip
         left_wrap = QtWidgets.QWidget()
         lw = QtWidgets.QHBoxLayout(left_wrap)
-        lw.setContentsMargins(0, 8, 0, 0)           # << space under data.yaml chip
+        lw.setContentsMargins(0, 8, 0, 0)
         lw.setSpacing(0)
         lw.addWidget(merge_btn, 0, QtCore.Qt.AlignLeft)
 
-        # add as a new row: button in LabelRole, empty right column
         row = lay.rowCount()
         lay.setWidget(row, QtWidgets.QFormLayout.LabelRole, left_wrap)
         lay.setWidget(row, QtWidgets.QFormLayout.FieldRole, QtWidgets.QWidget())
 
-
         self.stack.addWidget(card)
-
-
 
     def _build_page_seg(self):
         card = self._card()
@@ -687,7 +727,6 @@ class StepTrain(QtWidgets.QWidget):
         title.setStyleSheet("color:#e5eefb; font-weight:700;")
         grid.addWidget(title, 0, 0, 1, 4)
 
-        # Bigger + nicer radios
         rb_css = """
         QRadioButton {
             color:#e6edf7; font-size:15px; font-weight:600;
@@ -710,7 +749,6 @@ class StepTrain(QtWidgets.QWidget):
         grid.addWidget(self.seg_default_rb, 1, 0)
         grid.addWidget(self.seg_custom_rb,  1, 1)
 
-        # Weights input
         self.seg_path_edit = QtWidgets.QLineEdit(self.DEFAULT_SEG_PATH)
         self.seg_browse = QtWidgets.QToolButton()
         self.seg_browse.setText("Browse…")
@@ -722,7 +760,6 @@ class StepTrain(QtWidgets.QWidget):
         hp.addWidget(self.seg_path_edit)
         hp.addWidget(self.seg_browse)
 
-        # Put the whole "Weights path:  [edit][browse]" into ONE container so we can hide/show it
         self.seg_weights_container = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(self.seg_weights_container)
         row.setContentsMargins(0,0,0,0)
@@ -732,19 +769,16 @@ class StepTrain(QtWidgets.QWidget):
         row.addWidget(seg_wlbl)
         row.addLayout(hp)
 
-        # Add that single container to the grid (spans across columns)
         grid.addWidget(self.seg_weights_container, 2, 0, 1, 4)
 
         info = QtWidgets.QLabel("Tip: leave default if you want to start from provided seg weights.")
         info.setStyleSheet("color:#9fb6d6;")
         grid.addWidget(info, 3, 0, 1, 4)
 
-        # react to toggles
         self.seg_default_rb.toggled.connect(self._update_states)
         self.seg_custom_rb.toggled.connect(self._update_states)
 
         self.stack.addWidget(card)
-
 
     def _build_page_det(self):
         card = self._card()
@@ -757,7 +791,6 @@ class StepTrain(QtWidgets.QWidget):
         title.setStyleSheet("color:#e5eefb; font-weight:700;")
         grid.addWidget(title, 0, 0, 1, 4)
 
-        # Bigger + styled radios (same as segmentation)
         rb_css = """
         QRadioButton {
             color:#e6edf7; font-size:15px; font-weight:600;
@@ -780,7 +813,6 @@ class StepTrain(QtWidgets.QWidget):
         grid.addWidget(self.det_default_rb, 1, 0)
         grid.addWidget(self.det_custom_rb,  1, 1)
 
-        # Weights input (inside a container so we can hide/show the whole row)
         self.det_path_edit = QtWidgets.QLineEdit(self.DEFAULT_DET_PATH)
         self.det_browse = QtWidgets.QToolButton()
         self.det_browse.setText("Browse…")
@@ -807,12 +839,10 @@ class StepTrain(QtWidgets.QWidget):
         info.setStyleSheet("color:#9fb6d6;")
         grid.addWidget(info, 3, 0, 1, 4)
 
-        # react to toggles
         self.det_default_rb.toggled.connect(self._update_states)
         self.det_custom_rb.toggled.connect(self._update_states)
 
         self.stack.addWidget(card)
-
 
     def _build_page_hparams(self):
         card = self._card()
@@ -821,7 +851,6 @@ class StepTrain(QtWidgets.QWidget):
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(12)
 
-        # collect labels for size equalization
         self._hparam_labels = []
 
         chip_css = """
@@ -835,14 +864,13 @@ class StepTrain(QtWidgets.QWidget):
 
         def mk_lbl(t):
             lb = QtWidgets.QLabel(t)
-            lb.setAlignment(QtCore.Qt.AlignCenter)   # center text inside the chip
+            lb.setAlignment(QtCore.Qt.AlignCenter)
             lb.setStyleSheet(chip_css)
             self._hparam_labels.append(lb)
             return lb
 
-        # NEW: device selector
         self.device_combo = QtWidgets.QComboBox()
-        self._populate_device_combo()  # fills with cpu / cuda / cuda:0 ...
+        self._populate_device_combo()
 
         self.epochs = QtWidgets.QSpinBox(); self.epochs.setRange(1, 5000); self.epochs.setValue(400)
         self.imgsz  = QtWidgets.QSpinBox(); self.imgsz.setRange(32, 4096); self.imgsz.setSingleStep(32); self.imgsz.setValue(1024)
@@ -851,30 +879,22 @@ class StepTrain(QtWidgets.QWidget):
         self.project= QtWidgets.QLineEdit("runs")
         self.lr0    = QtWidgets.QDoubleSpinBox(); self.lr0.setDecimals(6); self.lr0.setRange(1e-6, 1.0); self.lr0.setSingleStep(0.0001); self.lr0.setValue(0.0001)
 
-        # Layout: EVEN columns (unchanged)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 2)
         grid.setColumnStretch(2, 1)
         grid.setColumnStretch(3, 2)
 
-        # Row 0
         grid.addWidget(mk_lbl("device"), 0, 0); grid.addWidget(self.device_combo, 0, 1)
         grid.addWidget(mk_lbl("epochs"), 0, 2); grid.addWidget(self.epochs,      0, 3)
-        # Row 1
         grid.addWidget(mk_lbl("imgsz"),  1, 0); grid.addWidget(self.imgsz,       1, 1)
         grid.addWidget(mk_lbl("optimizer"), 1, 2); grid.addWidget(self.opt,      1, 3)
-        # Row 2
         grid.addWidget(mk_lbl("batch"),  2, 0); grid.addWidget(self.batch,       2, 1)
         grid.addWidget(mk_lbl("project"),2, 2); grid.addWidget(self.project,     2, 3)
-        # Row 3
         grid.addWidget(mk_lbl("lr0"),    3, 0); grid.addWidget(self.lr0,         3, 1)
 
-        # Make ALL chips exactly the same size (width + height)
         QtCore.QTimer.singleShot(0, lambda: self._equalize_label_sizes(self._hparam_labels))
 
         self.stack.addWidget(card)
-
-
 
     def _build_page_run(self):
         card = self._card()
@@ -890,13 +910,13 @@ class StepTrain(QtWidgets.QWidget):
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.setSpacing(10)
         self.btn_build = QtWidgets.QPushButton("Build Commands")
-        self.btn_build.setObjectName("navButton")           # ← secondary style
+        self.btn_build.setObjectName("navButton")
         self.btn_build.setFixedHeight(44)
         self.btn_build.setMinimumWidth(140)
         self.btn_build.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
 
         self.btn_start = QtWidgets.QPushButton("Start Training")
-        self.btn_start.setObjectName("primaryNavButton")    # ← primary style
+        self.btn_start.setObjectName("primaryNavButton")
         self.btn_start.setFixedHeight(44)
         self.btn_start.setMinimumWidth(160)
         self.btn_start.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
@@ -952,18 +972,16 @@ class StepTrain(QtWidgets.QWidget):
         }
         QToolButton { background: rgba(14,165,233,0.1); color:#d6f1ff; border:1px solid #0ea5e9; border-radius:8px; padding:8px 12px; }
         QToolButton:hover { background: rgba(14,165,233,0.2); }
-        /* keep focus styling only for the widgets we still style */
         QLineEdit:focus, QComboBox:focus { border-color:#0ea5e9; }
 
-
         QPlainTextEdit#console { background: #0b1220; border:1px solid #223; border-radius:10px; color:#e5e7eb; font-family: Consolas, 'Fira Code', monospace; font-size: 12px; padding: 8px; }
-        """"""
+        """""" 
         /* Uniform control heights */
         QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QToolButton {
-            min-height: 10px;     /* consistent height */
-            padding: 8px 12px;    /* even padding */
+            min-height: 10px;
+            padding: 8px 12px;
         }
-        QLabel#trainTitle { /* already there, keep */ }
+        QLabel#trainTitle { }
         """)
 
     def _wrap(self, layout: QtWidgets.QLayout) -> QtWidgets.QWidget:
@@ -980,20 +998,16 @@ class StepTrain(QtWidgets.QWidget):
             editor.setText(fn)
 
     def _update_states(self):
-        # existing enables
         self.seg_path_edit.setEnabled(self.seg_custom_rb.isChecked())
         self.seg_browse.setEnabled(self.seg_custom_rb.isChecked())
         self.det_path_edit.setEnabled(self.det_custom_rb.isChecked())
         self.det_browse.setEnabled(self.det_custom_rb.isChecked())
 
-        # visibility toggles (Segmentation)
         if hasattr(self, "seg_weights_container"):
             self.seg_weights_container.setVisible(self.seg_custom_rb.isChecked())
 
-        # visibility toggles (Detection)  <<< NEW
         if hasattr(self, "det_weights_container"):
             self.det_weights_container.setVisible(self.det_custom_rb.isChecked())
-
 
     # ===== command builders & runners =====
     def _populate_device_combo(self):
@@ -1003,14 +1017,12 @@ class StepTrain(QtWidgets.QWidget):
         cuda_ok = False
         gpu_names = []
 
-        # Try importing torch lazily and check CUDA
         try:
             import torch  # noqa
             try:
                 if torch.cuda.is_available():  # type: ignore[attr-defined]
                     cuda_ok = True
                     n = torch.cuda.device_count()  # type: ignore[attr-defined]
-                    # 'cuda' alias for default GPU
                     opts.append("cuda")
                     for i in range(n):
                         opts.append(f"cuda:{i}")
@@ -1021,10 +1033,8 @@ class StepTrain(QtWidgets.QWidget):
             except Exception:
                 pass
         except ImportError:
-            # torch not installed: keep CPU only
             pass
 
-        # If torch can't see CUDA, try nvidia-smi just to inform the user
         if not cuda_ok and shutil.which("nvidia-smi"):
             try:
                 out = subprocess.run(
@@ -1039,7 +1049,6 @@ class StepTrain(QtWidgets.QWidget):
         self.device_combo.clear()
         self.device_combo.addItems(opts)
 
-        # Helpful tooltip
         if cuda_ok:
             self.device_combo.setToolTip("CUDA available: " + ", ".join(gpu_names))
             self.device_combo.setCurrentText("cuda")
@@ -1051,30 +1060,10 @@ class StepTrain(QtWidgets.QWidget):
                 tip += "No NVIDIA GPU/driver detected or PyTorch not installed."
             self.device_combo.setToolTip(tip)
 
-
-
-    def _common_flags(self) -> str:
-        device_val = self.device_combo.currentText().strip() if hasattr(self, "device_combo") else "cpu"
-        return (
-            f"epochs={self.epochs.value()} "
-            f"imgsz={self.imgsz.value()} "
-            f"optimizer={self.opt.currentText()} "
-            f"device={device_val} "
-            f"patience=0 "
-            f"batch={self.batch.value()} "
-            f"project={self.project.text().strip()} "
-            f"lr0={self.lr0.value()}"
-        )
-
-
-
     def _quote(self, s: str) -> str:
-        # For Ultralytics key=value syntax, DO NOT quote on Windows;
-        # they don't strip surrounding quotes.
         return s
 
     def _normpath(self, p: str) -> str:
-        # Use forward slashes; Ultralytics handles them fine on Windows.
         return p.replace("\\", "/")
 
     def _get_seg_weights(self) -> str:
@@ -1083,13 +1072,87 @@ class StepTrain(QtWidgets.QWidget):
     def _get_det_weights(self) -> str:
         return self.det_path_edit.text().strip() if self.det_custom_rb.isChecked() else self.DEFAULT_DET_PATH
 
-    def _validate_paths(self, data_yaml: str, weights: str):
-        if not os.path.isfile(data_yaml):
-            raise FileNotFoundError(f"data.yaml not found: {data_yaml}")
-        if not os.path.isfile(weights):
-            raise FileNotFoundError(f"Weights not found: {weights}")
+    # ---------- NEW: robust data.yaml preflight ----------
+    def _fix_and_stage_data_yaml(self, data_yaml_path: str) -> str:
+        """
+        Load data.yaml, resolve/repair paths (train/val[/test]), and write a temp
+        YAML next to the original (in a .cache_wizard folder) that Ultralytics will consume.
+        Returns the path to the temp YAML.
+        """
+        import yaml
 
+        src = Path(data_yaml_path).resolve()
+        if not src.is_file():
+            raise FileNotFoundError(f"data.yaml not found: {src}")
 
+        with open(src, "r", encoding="utf-8") as f:
+            data = (yaml.safe_load(f) or {})
+
+        base = src.parent
+
+        dataset_root = data.get("path", "")
+        train = data.get("train", "")
+        val   = data.get("val", "")
+        test  = data.get("test", "")
+
+        def _abs(candidate: str) -> Path:
+            c = str(candidate or "").strip()
+            if not c:
+                return Path("")
+            p = Path(c)
+            return p if p.is_absolute() else (base / p)
+
+        path_hint = _abs(dataset_root) if dataset_root else base
+
+        def _resolve_dir(p: str | Path) -> Path:
+            if not p:
+                return Path("")
+            p = Path(p)
+            if not p.is_absolute():
+                p = (path_hint / p) if dataset_root else (base / p)
+            if p.is_dir():
+                return p
+            # fallback guesses
+            for guess in [p.parent, base / p.name, path_hint / p.name]:
+                if guess.is_dir():
+                    return guess
+            return p
+
+        train_dir = _resolve_dir(train)
+        val_dir   = _resolve_dir(val)
+        test_dir  = _resolve_dir(test) if test else Path("")
+
+        def _ensure_dir(label: str, p: Path) -> Path:
+            if p and p.is_dir():
+                return p
+            dn = QtWidgets.QFileDialog.getExistingDirectory(
+                self, f"Select {label}", str(base)
+            )
+            if not dn:
+                raise FileNotFoundError(f"{label} not found and no folder selected.")
+            return Path(dn)
+
+        train_dir = _ensure_dir("train images folder", train_dir)
+        val_dir   = _ensure_dir("val images folder",   val_dir)
+        if test:
+            test_dir = _ensure_dir("test images folder", test_dir)
+
+        fixed = dict(data)
+        fixed.pop("path", None)
+        fixed["train"] = fwd(train_dir)
+        fixed["val"]   = fwd(val_dir)
+        if test:
+            fixed["test"]  = fwd(test_dir)
+
+        cache_dir = base / ".cache_wizard"
+        cache_dir.mkdir(exist_ok=True)
+        out = cache_dir / f"{src.stem}_fixed.yaml"
+
+        import yaml
+        with open(out, "w", encoding="utf-8") as f:
+            yaml.safe_dump(fixed, f, sort_keys=False)
+
+        return fwd(out)
 
     def _yolo_bin(self) -> str:
         """Return the YOLO runner (CLI if on PATH, else module form)."""
@@ -1102,13 +1165,12 @@ class StepTrain(QtWidgets.QWidget):
             cmds (list): list of tuples (program, args_list)
         """
         data_yaml = (self.data_edit.text() or "").strip()
-        if not data_yaml:
-            raise ValueError("Please choose your data.yaml (Dataset → Browse…).")
+        if not data_yaml or not os.path.isfile(data_yaml):
+            raise ValueError("Please choose a valid data.yaml (Dataset → Browse…).")
 
         ver = self.ver_combo.currentText()
         info = f"[info] Requested Ultralytics major version: {ver} (ensure your environment has this installed)"
 
-        # validate and normalize
         if self.mode == "seg":
             weights = self._get_seg_weights()
         elif self.mode == "det":
@@ -1116,11 +1178,15 @@ class StepTrain(QtWidgets.QWidget):
         else:
             raise ValueError("Detectron training not implemented in this screen yet.")
 
-        self._validate_paths(data_yaml, weights)
+        # Helpful, explicit error if weights are missing
+        if not weights or not os.path.isfile(weights):
+            raise FileNotFoundError(
+                "Weights not found. Either select a custom .pt file or place a default\n"
+                "model in one of these folders next to the app: models/, weights/, assets/."
+            )
 
-        # keep forward slashes; OK on Windows
-        y = data_yaml.replace("\\", "/")
-        w = weights.replace("\\", "/")
+        # Fix/normalize YAML splits and stage a temp copy for training
+        fixed_yaml = self._fix_and_stage_data_yaml(data_yaml)
 
         # program to run
         if shutil.which("yolo"):
@@ -1131,11 +1197,10 @@ class StepTrain(QtWidgets.QWidget):
             prefix = ["-m", "ultralytics"]
 
         if self.mode == "seg":
-            args = prefix + self._build_args("segment", w, y)
+            args = prefix + self._build_args("segment", weights.replace("\\", "/"), fixed_yaml)
         else:
-            args = prefix + self._build_args("detect", w, y)
+            args = prefix + self._build_args("detect",  weights.replace("\\", "/"), fixed_yaml)
 
-        # return as a list with a single (program,args) tuple
         return info, [(program, args)]
 
     def _build_args(self, task: str, w: str, y: str) -> list:
@@ -1155,9 +1220,7 @@ class StepTrain(QtWidgets.QWidget):
             f"lr0={self.lr0.value()}",
         ]
 
-
     def _fmt_cmd(self, program: str, args: list[str]) -> str:
-        # for display only
         return program + " " + " ".join(args)
 
     def _on_build(self):
@@ -1170,7 +1233,7 @@ class StepTrain(QtWidgets.QWidget):
         self.console.appendPlainText(info)
         for program, args in cmds:
             self.console.appendPlainText(self._fmt_cmd(program, args))
-        self.nav.setCurrentRow(4)  # optional UX
+        self.nav.setCurrentRow(4)
 
     def _on_start(self):
         try:
@@ -1183,27 +1246,22 @@ class StepTrain(QtWidgets.QWidget):
         self.console.appendPlainText(info)
         for program, args in cmds:
             self.console.appendPlainText(self._fmt_cmd(program, args))
-        self.nav.setCurrentRow(4)  # optional UX
+        self.nav.setCurrentRow(4)
         self._run_commands_sequential(cmds)
 
-        
     def _pipe(self, data: QtCore.QByteArray):
         """Append process output to the console safely."""
         try:
             text = bytes(data).decode("utf-8", errors="ignore")
             if text:
-                # strip trailing newlines to avoid double-spacing
                 self.console.appendPlainText(text.rstrip())
-                # keep the view scrolled to the bottom
                 vsb = self.console.verticalScrollBar()
                 if vsb:
                     vsb.setValue(vsb.maximum())
         except Exception:
-            # swallow any odd decoding errors
             pass
 
     def _run_commands_sequential(self, commands: list):
-        # commands is a list of (program, args_list)
         if hasattr(self, "btn_start"): self.btn_start.setEnabled(False)
         if hasattr(self, "btn_build"): self.btn_build.setEnabled(False)
         self._proc = QtCore.QProcess(self)
@@ -1224,7 +1282,6 @@ class StepTrain(QtWidgets.QWidget):
 
         program, args = self._cmds[self._idx]
         self._proc.start(program, args)
-        # pretty print what we run
         self.console.appendPlainText(f"\n[Running {self._idx+1}/{len(self._cmds)}] -> {program} " + " ".join(args))
 
 # ================================== Main Window =============================================
@@ -1235,7 +1292,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("Training Wizard")
         self.resize(1180, 760)
 
-        # --- central content (what you already had) ---
         central = QtWidgets.QWidget(); central.setObjectName("centralWidget")
         root = QtWidgets.QHBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1338,7 +1394,7 @@ class MainWindow(QtWidgets.QMainWindow):
         main_layout.addWidget(nav_bar)
         root.addWidget(main_container, 1)
 
-        # --- NEW: solid root wrapper to prevent background banding when embedded ---
+        # Solid root wrapper
         root_frame = QtWidgets.QFrame()
         root_frame.setObjectName("trainingRoot")
         wrap = QtWidgets.QVBoxLayout(root_frame)
@@ -1348,7 +1404,7 @@ class MainWindow(QtWidgets.QMainWindow):
         wrap.setSpacing(0)
         wrap.addWidget(central)
 
-        self.setCentralWidget(root_frame)   # <— use the wrapper as central widget
+        self.setCentralWidget(root_frame)
 
         # style
         self._apply_qss()
@@ -1409,31 +1465,24 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_qss(self):
         self.setStyleSheet("""
         * { font-family: 'Segoe UI','SF Pro Display',-apple-system,BlinkMacSystemFont,Arial,sans-serif; font-size: 14px; }
-
-        /* ensure labels never draw opaque boxes on dark pages */
         QLabel { background: transparent; }
 
-        /* SOLID ROOT so nothing bleeds through when embedded */
-        #trainingRoot { background: #0f1419; }            /* central widget of the training window */
-        QWidget#mainContainer { background: #0f1419; }    /* solid, not transparent */
+        #trainingRoot { background: #0f1419; }
+        QWidget#mainContainer { background: #0f1419; }
         QStackedWidget#contentStack { background: #0f1419; }
 
-        /* Sidebar */
         QWidget#sidebar { background: #0f172a; border-right: 1px solid #334155; }
         QWidget#sidebarHeader { background: #0f172a; border-bottom: 1px solid #334155; }
         QLabel#logo { color: #f1f5f9; font-size: 18px; font-weight: 700; letter-spacing:-0.3px; }
-        QLabel#stepTitle { color: #94a3b8; font-size: 14px; background: transparent; }  /* <- force transparent */
+        QLabel#stepTitle { color: #94a3b8; font-size: 14px; background: transparent; }
 
-        /* Top bar — make it solid (no rgba) */
         QWidget#topBar { background: #0f172a; border-bottom: 1px solid #1f2937; }
         QToolButton#helpButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #0ea5e9, stop:1 #0284c7); border:none; border-radius:18px; }
         QToolButton#helpButton:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #0284c7, stop:1 #0369a1); }
 
-        /* Titles */
         QLabel#pageTitle { color:#f8fafc; font-size:22px; font-weight:800; letter-spacing:-0.3px; background: transparent; }
         QLabel#pageSubtitle { color:#94a3b8; font-size:15px; background: transparent; }
 
-        /* Bottom nav — solid */
         QWidget#navBar { background: #0f172a; border-top:1px solid #334155; }
         QPushButton#navButton { background:#394150; color:#cbd5e1; border:1px solid #475569; border-radius:10px; font-weight:600; }
         QPushButton#navButton:hover { background:#4b5563; border-color:#64748b; }
@@ -1441,10 +1490,9 @@ class MainWindow(QtWidgets.QMainWindow):
         QPushButton#primaryNavButton:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0284c7, stop:1 #0369a1); }
 
         QWidget#modeCard { border-radius:12px; }
-        QWidget#modeCard QLabel#cardTitle { color:#ffffff; background: transparent; }  /* <- force transparent */
+        QWidget#modeCard QLabel#cardTitle { color:#ffffff; background: transparent; }
 
-        /* Inputs */
-       QLineEdit, QComboBox {
+        QLineEdit, QComboBox {
             background:#0b1220;
             border:2px solid #334155;
             border-radius:8px;
@@ -1452,7 +1500,6 @@ class MainWindow(QtWidgets.QMainWindow):
             color:#f1f5f9;
         }
         QLineEdit:focus, QComboBox:focus { border-color:#0ea5e9; }
-
 
         QPlainTextEdit#console { background:#0b1220; border:1px solid #223; border-radius:10px; color:#e5e7eb; font-family:Consolas,'Fira Code',monospace; font-size:12px; padding:8px; }
         """)
@@ -1468,5 +1515,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
