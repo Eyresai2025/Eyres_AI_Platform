@@ -3,10 +3,44 @@ import sys, os
 from typing import List, Tuple
 from PyQt5 import QtCore, QtGui, QtWidgets
 import shutil
-
-# --- Dynamic path helpers (PyInstaller-friendly) ---
 from pathlib import Path
 
+# ---------------- Dependency helper: PyYAML on demand ----------------
+def require_yaml(parent: QtWidgets.QWidget | None = None):
+    """
+    Ensure PyYAML is available. If not installed, ask the user to install it,
+    try to install via pip, then import again. Raises ImportError if still missing.
+    """
+    try:
+        import yaml  # type: ignore
+        return yaml
+    except Exception:
+        # Ask user if we should install
+        ans = QtWidgets.QMessageBox.question(
+            parent,
+            "Missing dependency",
+            "PyYAML is required but not installed.\n\n"
+            "Install it now via pip?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if ans == QtWidgets.QMessageBox.Yes:
+            try:
+                import subprocess
+                # Use -m pip to install for the same interpreter
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "pyyaml"])
+                import yaml  # type: ignore
+                QtWidgets.QMessageBox.information(parent, "Installed", "PyYAML installed successfully.")
+                return yaml
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(parent, "Install failed",
+                                               f"Could not install PyYAML automatically.\n\nError:\n{e}\n\n"
+                                               f"You can install it manually:\n"
+                                               f"{sys.executable} -m pip install pyyaml")
+                raise ImportError("PyYAML not available and automatic install failed.") from e
+        else:
+            raise ImportError("PyYAML not available and user declined installation.")
+
+# --- Dynamic path helpers (PyInstaller-friendly) ---
 def app_base_dir() -> Path:
     """Root folder of the app (PyInstaller-safe)."""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
@@ -32,10 +66,7 @@ def candidate_dirs() -> list[Path]:
     ]
 
 def find_first_file(*names_or_relpaths: str) -> Path | None:
-    """
-    Find the first existing file by trying each candidate dir combined with the given
-    names or relative paths. You can pass multiple names to allow fallbacks.
-    """
+    """Find the first existing file in candidate dirs."""
     for folder in candidate_dirs():
         for name in names_or_relpaths:
             p = (folder / name)
@@ -58,9 +89,8 @@ HELP_HTML = """
   <p>Training is CPU-only. Segmentation runs before Detection.</p>
 </div>
 """
+
 # --------------------------------------Helpers---------------------------------
-
-
 class SimpleHelpDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -193,9 +223,10 @@ class DatasetMergeDialog(QtWidgets.QDialog):
         le = row_widget.findChild(QtWidgets.QLineEdit)
         return (le.text() or "").strip() if le else ""
 
-    # ---------- run your merge code ----------
+    # ---------- run merge ----------
     def _run_merge(self):
-        import yaml, shutil
+        yaml = require_yaml(self)
+        import shutil as _shutil
 
         base_yaml_path   = self._val(self.base_yaml[1])
         update_yaml_path = self._val(self.update_yaml[1])
@@ -210,7 +241,7 @@ class DatasetMergeDialog(QtWidgets.QDialog):
         dst_test_images  = self._val(self.dst_test_images[1])
         dst_test_labels  = self._val(self.dst_test_labels[1])
 
-        # derive update label dirs explicitly (your script needs these)
+        # derive update label dirs explicitly
         update_train_dir = src_train_labels
         update_test_dir  = src_test_labels
 
@@ -235,16 +266,17 @@ class DatasetMergeDialog(QtWidgets.QDialog):
 
         try:
             # ===== STEP 1: MERGE CLASSES =====
-            with open(base_yaml_path) as f:
-                base_data = yaml.safe_load(f)
-            with open(update_yaml_path) as f:
-                update_data = yaml.safe_load(f)
+            with open(base_yaml_path, "r", encoding="utf-8") as f:
+                base_data = yaml.safe_load(f) or {}
+            with open(update_yaml_path, "r", encoding="utf-8") as f:
+                update_data = yaml.safe_load(f) or {}
 
-            # merge names
-            for cls in update_data['names']:
-                if cls not in base_data['names']:
-                    base_data['names'].append(cls)
-            base_data['nc'] = len(base_data['names'])
+            base_data.setdefault("names", [])
+            update_names = update_data.get("names", [])
+            for cls in update_names:
+                if cls not in base_data["names"]:
+                    base_data["names"].append(cls)
+            base_data["nc"] = len(base_data["names"])
 
             class InlineList(list): pass
             def represent_inline_list(dumper, data):
@@ -252,18 +284,18 @@ class DatasetMergeDialog(QtWidgets.QDialog):
             yaml.add_representer(InlineList, represent_inline_list)
             base_data['names'] = InlineList(base_data['names'])
 
-            with open(base_yaml_path, 'w') as f:
-                yaml.dump(base_data, f, default_flow_style=False, sort_keys=False)
+            with open(base_yaml_path, 'w', encoding="utf-8") as f:
+                yaml.safe_dump(base_data, f, default_flow_style=False, sort_keys=False)
 
             # ===== STEP 2: UPDATE LABELS (IN PLACE) =====
-            update_to_final_map = {i: base_data['names'].index(cls) for i, cls in enumerate(update_data['names'])}
+            update_to_final_map = {i: base_data['names'].index(cls) for i, cls in enumerate(update_names)}
 
             def update_labels_in_place(folder, mapping):
                 files = [f for f in os.listdir(folder) if f.endswith('.txt')]
                 for item in files:
                     fp = os.path.join(folder, item)
                     rows = []
-                    with open(fp, 'r') as myfile:
+                    with open(fp, 'r', encoding="utf-8") as myfile:
                         for line in myfile:
                             s = line.strip()
                             if s:
@@ -272,8 +304,8 @@ class DatasetMergeDialog(QtWidgets.QDialog):
                     for r in rows:
                         old = r[0]
                         if old.isdigit():
-                            r[0] = str(mapping[int(old)])
-                    with open(fp, 'w') as wf:
+                            r[0] = str(mapping.get(int(old), int(old)))
+                    with open(fp, 'w', encoding="utf-8") as wf:
                         for r in rows:
                             wf.write(" ".join(r) + "\n")
 
@@ -289,7 +321,7 @@ class DatasetMergeDialog(QtWidgets.QDialog):
                     s = os.path.join(src, file)
                     d = os.path.join(dst, file)
                     if os.path.isfile(s):
-                        shutil.copy2(s, d)
+                        _shutil.copy2(s, d)
 
             copy_files(src_train_images, dst_train_images)
             copy_files(src_train_labels, dst_train_labels)
@@ -375,9 +407,9 @@ class StepModel(QtWidgets.QWidget):
         title.setAutoFillBackground(False)
         title.setStyleSheet("""
             background: transparent;
-            font-size: 26px;          
-            color: #27b6f3;            
-            font-weight: 700;          
+            font-size: 26px;
+            color: #27b6f3;
+            font-weight: 700;
         """)
         subtitle = QtWidgets.QLabel("Choose one model to proceed")
         subtitle.setObjectName("pageSubtitle")
@@ -479,7 +511,6 @@ class StepModel(QtWidgets.QWidget):
                 if name == "Detectron 1":        return "d1"
                 if name == "Detectron 2":        return "d2"
         return "seg"
-
 
 # ------------------------------ Train Config Page -------------------------------------------
 class StepTrain(QtWidgets.QWidget):
@@ -586,7 +617,7 @@ class StepTrain(QtWidgets.QWidget):
             if it:
                 it.setHidden(False)
 
-        # Hide the unused one, but DO NOT jump to it
+        # Hide the unused one
         if mode == "seg":
             it = self.nav.item(2)
             if it:
@@ -610,11 +641,10 @@ class StepTrain(QtWidgets.QWidget):
             l.setMinimumWidth(w)
             l.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
     def _equalize_label_sizes(self, labels: list[QtWidgets.QLabel]):
-        # compute based on final style; run via QTimer.singleShot(0, ...)
         w = max(l.sizeHint().width() for l in labels)
         h = max(l.sizeHint().height() for l in labels)
         for l in labels:
-            l.setWordWrap(False)  # avoid accidental multi-line wrap
+            l.setWordWrap(False)
             l.setMinimumSize(w, h)
             l.setMaximumHeight(h)
             l.setFixedHeight(h)
@@ -623,7 +653,6 @@ class StepTrain(QtWidgets.QWidget):
     def _open_merge_dialog(self):
         dlg = DatasetMergeDialog(self)
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
-            # if user completed merge successfully, optionally prefill data.yaml
             if dlg.out_base_yaml:
                 self.data_edit.setText(dlg.out_base_yaml)
             QtWidgets.QMessageBox.information(self, "Done", "Dataset merged and files copied successfully.")
@@ -649,8 +678,8 @@ class StepTrain(QtWidgets.QWidget):
         self.ver_combo.addItems(["8", "10", "11", "12"])
         self.ver_combo.setCurrentText("11")
         self.ver_combo.setToolTip("Informational: ensure your Python env has this Ultralytics major installed.")
-        self.ver_combo.setStyleSheet("")          # native look
-        self.ver_combo.setMinimumHeight(34)       # smaller box
+        self.ver_combo.setStyleSheet("")
+        self.ver_combo.setMinimumHeight(34)
 
         ver_label = QtWidgets.QLabel("Ultralytics version:")
         ver_label.setStyleSheet(chip_css)
@@ -659,7 +688,7 @@ class StepTrain(QtWidgets.QWidget):
         # ---- data.yaml (label chip + compact input) ----
         self.data_edit = QtWidgets.QLineEdit()
         self.data_edit.setPlaceholderText(r"Path to data.yaml")
-        self.data_edit.setMinimumHeight(40)       # reduced height
+        self.data_edit.setMinimumHeight(40)
         self.data_edit.setStyleSheet("""
             QLineEdit {
                 color:#ffffff;
@@ -672,7 +701,7 @@ class StepTrain(QtWidgets.QWidget):
         self.btn_browse_data = QtWidgets.QToolButton()
         self.btn_browse_data.setText("Browse…")
         self.btn_browse_data.clicked.connect(self._browse_data_yaml)
-        self.btn_browse_data.setMinimumHeight(34)  # smaller button
+        self.btn_browse_data.setMinimumHeight(34)
 
         hl = QtWidgets.QHBoxLayout()
         hl.setSpacing(8)
@@ -683,7 +712,6 @@ class StepTrain(QtWidgets.QWidget):
         data_label.setStyleSheet(chip_css)
         data_label.setAlignment(QtCore.Qt.AlignCenter)
 
-        # Make both chips EXACTLY the same size (width + height)
         QtCore.QTimer.singleShot(0, lambda: self._equalize_label_sizes([ver_label, data_label]))
 
         lay.addRow(ver_label, self.ver_combo)
@@ -975,7 +1003,6 @@ class StepTrain(QtWidgets.QWidget):
         QLineEdit:focus, QComboBox:focus { border-color:#0ea5e9; }
 
         QPlainTextEdit#console { background: #0b1220; border:1px solid #223; border-radius:10px; color:#e5e7eb; font-family: Consolas, 'Fira Code', monospace; font-size: 12px; padding: 8px; }
-        """""" 
         /* Uniform control heights */
         QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QToolButton {
             min-height: 10px;
@@ -1011,7 +1038,7 @@ class StepTrain(QtWidgets.QWidget):
 
     # ===== command builders & runners =====
     def _populate_device_combo(self):
-        import shutil, subprocess
+        import shutil as _shutil, subprocess
 
         opts = ["cpu"]
         cuda_ok = False
@@ -1035,7 +1062,7 @@ class StepTrain(QtWidgets.QWidget):
         except ImportError:
             pass
 
-        if not cuda_ok and shutil.which("nvidia-smi"):
+        if not cuda_ok and _shutil.which("nvidia-smi"):
             try:
                 out = subprocess.run(
                     ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
@@ -1072,14 +1099,14 @@ class StepTrain(QtWidgets.QWidget):
     def _get_det_weights(self) -> str:
         return self.det_path_edit.text().strip() if self.det_custom_rb.isChecked() else self.DEFAULT_DET_PATH
 
-    # ---------- NEW: robust data.yaml preflight ----------
+    # ---------- data.yaml preflight with YAML dependency handled ----------
     def _fix_and_stage_data_yaml(self, data_yaml_path: str) -> str:
         """
         Load data.yaml, resolve/repair paths (train/val[/test]), and write a temp
         YAML next to the original (in a .cache_wizard folder) that Ultralytics will consume.
         Returns the path to the temp YAML.
         """
-        import yaml
+        yaml = require_yaml(self)
 
         src = Path(data_yaml_path).resolve()
         if not src.is_file():
@@ -1125,9 +1152,7 @@ class StepTrain(QtWidgets.QWidget):
         def _ensure_dir(label: str, p: Path) -> Path:
             if p and p.is_dir():
                 return p
-            dn = QtWidgets.QFileDialog.getExistingDirectory(
-                self, f"Select {label}", str(base)
-            )
+            dn = QtWidgets.QFileDialog.getExistingDirectory(self, f"Select {label}", str(base))
             if not dn:
                 raise FileNotFoundError(f"{label} not found and no folder selected.")
             return Path(dn)
@@ -1148,7 +1173,6 @@ class StepTrain(QtWidgets.QWidget):
         cache_dir.mkdir(exist_ok=True)
         out = cache_dir / f"{src.stem}_fixed.yaml"
 
-        import yaml
         with open(out, "w", encoding="utf-8") as f:
             yaml.safe_dump(fixed, f, sort_keys=False)
 
@@ -1286,7 +1310,6 @@ class StepTrain(QtWidgets.QWidget):
 
 # ================================== Main Window =============================================
 class MainWindow(QtWidgets.QMainWindow):
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Training Wizard")
