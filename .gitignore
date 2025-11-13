@@ -1,3 +1,6 @@
 runs
 Ai.bat
 Ai_env
+dist
+build
+detectron2_repo
