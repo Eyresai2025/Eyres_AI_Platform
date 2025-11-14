@@ -4,3 +4,5 @@ Ai_env
 dist
 build
 detectron2_repo
+EyresAiPlatform.iss
+EyresAiPlatform.spec
