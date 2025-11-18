@@ -123,6 +123,22 @@ class DashboardPage(QWidget):
         main_layout.addLayout(stats_row)
         main_layout.addSpacing(30)
 
+        # Store label references for dynamic updates
+        self.machine_count_label = machine_card.findChild(QLabel, "total_machines_count")
+        self.project_count_label = project_card.findChild(QLabel, "total_projects_count")
+        
+        # Fallback: if findChild fails, search recursively
+        if not self.machine_count_label:
+            for widget in machine_card.findChildren(QLabel):
+                if widget.objectName() == "total_machines_count":
+                    self.machine_count_label = widget
+                    break
+        if not self.project_count_label:
+            for widget in project_card.findChildren(QLabel):
+                if widget.objectName() == "total_projects_count":
+                    self.project_count_label = widget
+                    break
+
         # -------- WELCOME TEXT --------
         welcome_label = QLabel("Welcome to EYRES QC Dashboard!")
         welcome_label.setStyleSheet("""
@@ -134,6 +150,23 @@ class DashboardPage(QWidget):
         main_layout.addWidget(welcome_label)
 
         main_layout.addStretch()
+
+    def refresh_counts(self):
+        try:
+            self.machine_count = len(self.machine_db.get_all_machines())
+        except:
+            self.machine_count = 0
+
+        try:
+            self.project_count = len(self.project_db.get_all_projects())
+        except:
+            self.project_count = 0
+
+        # Update labels dynamically
+        if hasattr(self, 'machine_count_label') and self.machine_count_label:
+            self.machine_count_label.setText(str(self.machine_count))
+        if hasattr(self, 'project_count_label') and self.project_count_label:
+            self.project_count_label.setText(str(self.project_count))
 
     def create_stat_card(self, title, value, icon_path):
         card = QFrame()
@@ -165,6 +198,7 @@ class DashboardPage(QWidget):
         text_layout.addWidget(title_label)
 
         value_label = QLabel(value)
+        value_label.setObjectName(title.replace(" ", "_").lower() + "_count")
         value_label.setStyleSheet("""
             font-size: 32px;
             font-weight: bold;

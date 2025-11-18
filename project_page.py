@@ -161,7 +161,7 @@ class ProjectPage(QWidget):
         left_layout.setAlignment(Qt.AlignTop)
 
         # Project Name
-        name_label = QLabel(p["name"])
+        name_label = QLabel(p.get("name", "Unnamed Project"))
         name_label.setStyleSheet("""
             color: white;
             font-size: 22px;
@@ -169,6 +169,12 @@ class ProjectPage(QWidget):
             padding-bottom: 4px;
         """)
         left_layout.addWidget(name_label)
+
+        # Project Type
+        proj_type = p.get("type", "Not Set")
+        type_label = QLabel(f"Type: {proj_type}")
+        type_label.setStyleSheet("color: #4A9EFF; font-size: 14px; padding: 2px 0;")
+        left_layout.addWidget(type_label)
 
         # Machine info
         machine_container = QWidget()
@@ -183,10 +189,14 @@ class ProjectPage(QWidget):
         if machine_id:
             machine = self.machine_db.get_machine(str(machine_id))
             if machine:
-                machine_name = machine["name"]
+                raw_machine_name = machine.get("name")
+                if isinstance(raw_machine_name, dict):
+                    machine_name = raw_machine_name.get("name") or str(raw_machine_name)
+                else:
+                    machine_name = str(raw_machine_name)
                 machine_info = machine
 
-        machine_label = QLabel(f"🔧 Machine: {machine_name}")
+        machine_label = QLabel(f"Machine: {machine_name}")
         machine_label.setStyleSheet("""
             color: #aaa;
             font-size: 14px;
@@ -290,6 +300,29 @@ class ProjectPage(QWidget):
         name.setPlaceholderText("Project name")
         name.setStyleSheet(self.input_style())
 
+        # Project type dropdown
+        type_select = QComboBox()
+        type_select.addItems([
+            "Anomaly",
+            "Classification",
+            "Anomaly + Classification",
+            "Dimension"
+        ])
+        type_select.setStyleSheet("""
+            QComboBox {
+                background-color: #1a1a1a;
+                border: 1px solid #333;
+                border-radius: 6px;
+                padding: 10px;
+                color: white;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #1a1a1a;
+                color: white;
+                selection-background-color: #1B5FCC;
+            }
+        """)
+
         # Machine dropdown
         machine_select = QComboBox()
         machine_select.setStyleSheet("""
@@ -310,21 +343,21 @@ class ProjectPage(QWidget):
         machines = self.machine_db.get_all_machines()
 
         for m in machines:
-            # Get machine name safely even if it’s nested / dict
+            # Get machine name safely even if it's nested / dict
             raw_name = m.get("name", "")
 
             if isinstance(raw_name, dict):
                 # Try common keys inside the dict, fall back to full dict as string
-                name = (
+                machine_name = (
                     raw_name.get("name")
                     or raw_name.get("machine_name")
                     or str(raw_name)
                 )
             else:
-                name = str(raw_name)
+                machine_name = str(raw_name)
 
             machine_id = str(m.get("_id") or m.get("id"))
-            machine_select.addItem(name, machine_id)
+            machine_select.addItem(machine_name, machine_id)
 
 
         if mode == "edit":
@@ -333,8 +366,14 @@ class ProjectPage(QWidget):
             machine_index = machine_select.findData(machine_id)
             if machine_index >= 0:
                 machine_select.setCurrentIndex(machine_index)
+            proj_type = project.get("type")
+            if proj_type:
+                index = type_select.findText(proj_type)
+                if index >= 0:
+                    type_select.setCurrentIndex(index)
 
         layout.addWidget(name)
+        layout.addWidget(type_select)
         layout.addWidget(machine_select)
 
         save_btn = QPushButton("Save")
@@ -354,7 +393,9 @@ class ProjectPage(QWidget):
             if mode == "add":
                 result = self.project_db.add_project(
                     name=name.text().strip(),
-                    machine_id=machine_id
+                    machine_id=machine_id,
+                    description="",
+                    type=type_select.currentText()
                 )
                 if result:
                     self.show_success("Project created")
@@ -365,7 +406,9 @@ class ProjectPage(QWidget):
                 success = self.project_db.update_project(
                     project_id,
                     name=name.text().strip(),
-                    machine_id=machine_id
+                    machine_id=machine_id,
+                    description="",
+                    type=type_select.currentText()
                 )
                 if success:
                     self.show_success("Project updated")

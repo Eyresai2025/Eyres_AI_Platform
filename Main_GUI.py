@@ -44,6 +44,24 @@ def _find_logo() -> Path | None:
             return files[0]
     return None
 
+def _find_logo_ico() -> Path | None:
+    media = _app_base_dir() / "Media"
+    if not media.exists():
+        return None
+
+    # try some common names first
+    for name in ("app.ico", "Logo.ico", "LOGO.ico", "app.ico", "EyResAI.ico"):
+        p = media / name
+        if p.is_file():
+            return p
+
+    # otherwise, first any .ico in Media
+    files = list(media.glob("*.ico"))
+    if files:
+        return files[0]
+    return None
+
+
 def _find_icon(filename: str) -> Path | None:
     """
     Return full path to an icon inside Media/, or None if not found.
@@ -61,7 +79,6 @@ def _find_icon(filename: str) -> Path | None:
 
 
 # ============================= UI Bits =============================
-
 class ToolButton(QPushButton):
     def __init__(self, text: str,
                  icon_path: Path | None = None,
@@ -96,24 +113,23 @@ class ToolButton(QPushButton):
     # -------- internal: apply the right stylesheet/text ----
     def _apply_style(self):
         if self._compact:
-            # icon-only, centered (collapsed sidebar)
-            super().setText("")  # hide label
+            super().setText("")
             self.setStyleSheet("""
                 QPushButton {
-                    background-color: #343a40;
+                    background-color: transparent;
                     color: #f8f9fa;
                     border: 0px solid transparent;
-                    border-radius: 16px;
-                    padding: 0;                  /* no horizontal text padding */
+                    border-radius: 0px;
+                    padding: 0;
+                    margin: 0;
                     font-size: 13px;
                     font-weight: 600;
                 }
                 QPushButton::menu-indicator { width: 0px; }
-                QPushButton:hover  { background-color: #495057; }
-                QPushButton:pressed { background-color: #495057; color: #f8f9fa; }
+                QPushButton:hover  { background-color: #3b4045; }
+                QPushButton:pressed { background-color: #3b4045; color: #f8f9fa; }
             """)
         else:
-            # icon + text, left aligned (expanded sidebar)
             super().setText(self.full_text)
             self.setStyleSheet("""
                 QPushButton {
@@ -130,6 +146,7 @@ class ToolButton(QPushButton):
                 QPushButton:hover  { background-color: #495057; }
                 QPushButton:pressed { background-color: #495057; color: #f8f9fa; }
             """)
+
 
 class PathwayIndicator(QWidget):
     def __init__(self, parent=None):
@@ -600,7 +617,16 @@ class AspectLogoLabel(QLabel):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if not self._orig.isNull():
-            scaled = self._orig.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # Do NOT upscale: only shrink if needed
+            target_w = min(self.width(), self._orig.width())
+            target_h = min(self.height(), self._orig.height())
+
+            scaled = self._orig.scaled(
+                target_w,
+                target_h,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
             super().setPixmap(scaled)
 
 
@@ -834,6 +860,37 @@ class MainWindow(QMainWindow):
         if hasattr(self, "btn_roi") and self.btn_roi is not None:
             self.btn_roi.set_compact(compact)
 
+        # header height (logo area)
+        if hasattr(self, "header_frame"):
+            self.header_frame.setFixedHeight(80 if compact else 110)
+
+        # nav layout margins tighter when collapsed
+        if hasattr(self, "nav_layout"):
+            if compact:
+                self.nav_layout.setContentsMargins(4, 16, 4, 16)
+            else:
+                self.nav_layout.setContentsMargins(8, 24, 8, 24)
+
+        # hide MEASUREMENTS label + line when collapsed
+        if hasattr(self, "measure_label"):
+            self.measure_label.setVisible(not compact)
+        if hasattr(self, "measure_line"):
+            self.measure_line.setVisible(not compact)
+
+        # swap logo PNG ↔ ICO depending on state
+        if hasattr(self, "logo_label"):
+            if compact and getattr(self, "logo_pixmap_compact", None) is not None:
+                self.logo_label.setPixmap(self.logo_pixmap_compact)
+            elif (not compact) and getattr(self, "logo_pixmap_full", None) is not None:
+                self.logo_label.setPixmap(self.logo_pixmap_full)
+
+        # --- NEW: compact behavior for Logout button ---
+        if hasattr(self, "btn_logout"):
+            if compact:
+                self.btn_logout.setText("")         # icon only
+            else:
+                self.btn_logout.setText("  Logout") # text when expanded
+
 
     def __init__(self):
         super().__init__()
@@ -841,9 +898,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AI Model Training Suite")
         self.setMinimumSize(1100, 700)  # or any size you like
         self.setGeometry(80, 80, 1200, 800)
-        self._collapsed_width = 72
+        self._collapsed_width = 56
         self._anim_ms = 160
         self._auto_collapse_ms = 280
+        self._live_window = None 
         self._build()
         self._restore_window_session()
         last_idx = max(0, min(self.prefs.get_last_tool_index(0), 7))
@@ -905,21 +963,22 @@ class MainWindow(QMainWindow):
 
         # --- Splitter ---
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.setHandleWidth(6)
+        self.splitter.setHandleWidth(3)
         self.splitter.setStyleSheet(
-            "QSplitter::handle { background:#3a3f44; } "
-            "QSplitter::handle:hover { background:#4b5156; }"
+            "QSplitter::handle { background:#0d6efd; } "
+            "QSplitter::handle:hover { background:#0d6efd; }"
         )
         root.addWidget(self.splitter, 1)
 
         # ================== Sidebar ==================
         self.side = QFrame()
         self.side.setObjectName("Sidebar")
-        self.side.setMinimumWidth(120)
+        self.side.setMinimumWidth(60)
         self.side.setMaximumWidth(320)
         self.side.setStyleSheet(
-            "QFrame#Sidebar{background-color:#2b2f33; border-right:1px solid #3a3f44;}"
+            "QFrame#Sidebar{background-color:#2b2f33; border-right:0px solid transparent;}"
         )
+
         self.side.setMouseTracking(True)
         self.side.installEventFilter(self)
         sv = QVBoxLayout(self.side)
@@ -935,23 +994,43 @@ class MainWindow(QMainWindow):
 
         logo_label = AspectLogoLabel()
         logo_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        logo_file = _find_logo()
-        if logo_file is not None:
-            pm = QPixmap(str(logo_file))
-            if not pm.isNull():
-                logo_label.setPixmap(pm)
-            else:
-                logo_label.setStyleSheet("background:#2b2f33; border-radius:8px;")
+        logo_file_png = _find_logo()
+        logo_file_ico = _find_logo_ico()
+
+        self.logo_pixmap_full = None     
+        self.logo_pixmap_compact = None  
+        if logo_file_png is not None:
+            pm_full = QPixmap(str(logo_file_png))
+            if not pm_full.isNull():
+                self.logo_pixmap_full = pm_full
+
+        if logo_file_ico is not None:
+            pm_ico = QPixmap(str(logo_file_ico))
+            if not pm_ico.isNull():
+                self.logo_pixmap_compact = pm_ico
+
+        # initial state = expanded → show full PNG if we have it,
+        # otherwise fall back to ICO, otherwise just a colored box
+        if self.logo_pixmap_full is not None:
+            logo_label.setPixmap(self.logo_pixmap_full)
+        elif self.logo_pixmap_compact is not None:
+            logo_label.setPixmap(self.logo_pixmap_compact)
         else:
             logo_label.setStyleSheet("background:#2b2f33; border-radius:8px;")
+
         hv.addWidget(logo_label)
         sv.addWidget(header)
+
+        # keep refs for collapse/expand behaviour
+        self.header_frame = header
+        self.logo_label = logo_label
 
         # --- Navigation buttons ---
         nav = QFrame()
         nv = QVBoxLayout(nav)
-        nv.setContentsMargins(8, 24, 8, 24)
-        nv.setSpacing(10)
+        nv.setContentsMargins(8, 20, 8, 18)
+        nv.setSpacing(6)
+        self.nav_layout = nv
 
         # keep list of all nav buttons
         self.nav_buttons = []
@@ -1043,13 +1122,24 @@ class MainWindow(QMainWindow):
             nv.addWidget(btn)
             self.nav_buttons.append(btn)
 
+         # --- NEW: Live button (just below Model Training) ---
+        live_icon_path = media_dir / "sidebar_live.png"   # optional icon file
+        self.btn_live = ToolButton(
+            "  Live",
+            icon_path=live_icon_path if live_icon_path.is_file() else None,
+            tooltip="Start live pipeline (configure later)",
+        )
+        self.btn_live.clicked.connect(self._on_live_clicked)   # your existing handler
+        nv.addWidget(self.btn_live)
+        self.nav_buttons.append(self.btn_live)
+
 
         # --- Measurements / ROI section ---
         nv.addSpacing(12)
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setFrameShadow(QFrame.Sunken)
-        line.setStyleSheet("color:#3a3f44;")
+        line.setStyleSheet("background-color:#0d6efd; color:#0d6efd; min-height:1px;")
         nv.addWidget(line)
 
         section = QLabel("MEASUREMENTS")
@@ -1059,6 +1149,8 @@ class MainWindow(QMainWindow):
             "margin:10px 12px 2px 12px; letter-spacing:1px;"
         )
         nv.addWidget(section)
+        self.measure_line = line
+        self.measure_label = section
 
         # keep a reference so we can toggle compact/expanded
         roi_icon_path = media_dir / "sidebar_roi.png"
@@ -1071,8 +1163,34 @@ class MainWindow(QMainWindow):
         nv.addWidget(self.btn_roi)          # <- add this
         self.nav_buttons.append(self.btn_roi)
 
-
+        nv.addSpacing(10) 
         nv.addStretch(1)
+        # --------- NEW: Logout button at bottom ----------
+        logout_icon_path = media_dir / "sidebar_logout.png"
+        self.btn_logout = QPushButton("  Logout")
+        self.btn_logout.setCursor(Qt.PointingHandCursor)
+        self.btn_logout.setFixedHeight(40)
+        self.btn_logout.setStyleSheet("""
+            QPushButton {
+                background-color:#dc3545;
+                color:#ffffff;
+                border:0px;
+                border-radius:16px;
+                padding:0 16px;
+                font-size:13px;
+                font-weight:600;
+                text-align:left;
+            }
+            QPushButton:hover  { background-color:#c82333; }
+            QPushButton:pressed{ background-color:#bd2130; }
+        """)
+
+        if logout_icon_path.is_file():
+            self.btn_logout.setIcon(QIcon(str(logout_icon_path)))
+            self.btn_logout.setIconSize(QSize(18, 18))
+
+        self.btn_logout.clicked.connect(self._on_logout_clicked)
+        nv.addWidget(self.btn_logout)
         sv.addWidget(nav, 1)
 
 
@@ -1139,6 +1257,69 @@ class MainWindow(QMainWindow):
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
         self._hover_timer.timeout.connect(self._collapse_sidebar)
+    
+        
+    def _on_live_clicked(self):
+        """
+        Open the Live pipeline window (from live.py).
+        Adjust import / class name here if needed.
+        """
+        try:
+            # ensure current folder is on sys.path
+            here = os.path.dirname(__file__)
+            if here not in sys.path:
+                sys.path.append(here)
+
+            from live import MainWindow as LiveWindow  # <-- change if your class name differs
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Live Error",
+                f"Cannot import live pipeline:\n{e}",
+            )
+            return
+
+        # keep one instance alive
+        if self._live_window is None:
+            try:
+                self._live_window = LiveWindow()
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Live Error",
+                    f"Failed to create live window:\n{e}",
+                )
+                self._live_window = None
+                return
+
+        if hasattr(self, "toast_info"):
+            try:
+                self.toast_info("Opening Live pipeline…", 1800)
+            except Exception:
+                pass
+
+        self._live_window.show()
+        self._live_window.raise_()
+        self._live_window.activateWindow()
+    
+    def _on_logout_clicked(self):
+        """
+        Logout: close this main window and show the login screen again.
+        """
+        from login_window import LoginWindow  # already imported at top
+
+        app = QApplication.instance()
+
+        # create a fresh login window
+        login = LoginWindow(on_login_success=after_login)
+
+        # keep a reference so it doesn't get garbage-collected
+        app._login_window = login
+
+        login.show()
+
+        # close current main window
+        self.close()
 
 
     def _restore_window_session(self):
@@ -1201,6 +1382,7 @@ class MainWindow(QMainWindow):
         if index == 0:
             if not _from_restore:
                 self.toast_info("Dashboard")
+            self.page_dashboard.refresh_counts()
             self.pathway.hide()
 
         elif index == 1:

@@ -1,107 +1,77 @@
-# src/models/machine.py
-
-from datetime import datetime
 from bson.objectid import ObjectId
+from datetime import datetime
 from db import mongo
-
-
-
-class MachineModel:
-    """
-    Machine = logical PLC unit
-    UI will call it 'Machine', internally we store PLC information.
-
-    One machine can have multiple projects.
-    """
-
-    def __init__(self):
-        self.collection = mongo.collection("machines")
-
-    # --------------------------------------------------------
-    # Create Machine
-    # --------------------------------------------------------
-    def create_machine(self, name, plc_ip="", plc_port=0, description=""):
-        if not name:
-            return {"success": False, "error": "Machine name is required"}
-
-        machine = {
-            "name": name,
-            "plc_ip": plc_ip,               # Future Phase 2: PLC read/write
-            "plc_port": plc_port,
-            "description": description,
-            "active": True,
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
-        }
-
-        result = self.collection.insert_one(machine)
-        machine["_id"] = result.inserted_id
-
-        return {"success": True, "machine": machine}
-
-    # --------------------------------------------------------
-    # Update machine
-    # --------------------------------------------------------
-    def update_machine(self, machine_id, data: dict):
+ 
+ 
+class Machines:
+    """MongoDB model for machines."""
+ 
+    coll = mongo.collection("machines")
+ 
+    # -----------------------------------------------------------
+    @staticmethod
+    def list_machines():
+        return list(Machines.coll.find({}))
+ 
+    # -----------------------------------------------------------
+    @staticmethod
+    def get_machine(machine_id):
         try:
-            mid = ObjectId(machine_id)
-        except:
-            return False
-
-        data["updated_at"] = datetime.utcnow()
-
-        result = self.collection.update_one(
-            {"_id": mid},
-            {"$set": data}
-        )
-
-        return result.modified_count > 0
-
-    # --------------------------------------------------------
-    # Delete machine
-    # --------------------------------------------------------
-    def delete_machine(self, machine_id):
-        try:
-            mid = ObjectId(machine_id)
-        except:
-            return False
-
-        result = self.collection.delete_one({"_id": mid})
-        return result.deleted_count > 0
-
-    # --------------------------------------------------------
-    # Get machine by ID
-    # --------------------------------------------------------
-    def get_machine(self, machine_id):
-        try:
-            return self.collection.find_one({"_id": ObjectId(machine_id)})
-        except:
+            oid = ObjectId(machine_id)
+        except Exception:
             return None
-
-    # --------------------------------------------------------
-    # List all machines
-    # --------------------------------------------------------
-    def list_machines(self):
-        return list(self.collection.find().sort("created_at", -1))
-
-    # --------------------------------------------------------
-    # Enable/Disable machine (soft toggle)
-    # --------------------------------------------------------
-    def set_active_status(self, machine_id, state: bool):
+        return Machines.coll.find_one({"_id": oid})
+ 
+    # -----------------------------------------------------------
+    @staticmethod
+    def create_machine(payload: dict):
+        """
+        Payload should be a FLAT dict with:
+        {
+            name, description, ip_address,
+            plc_brand, plc_model, plc_protocol, active
+        }
+        """
         try:
-            mid = ObjectId(machine_id)
-        except:
+            doc = payload.copy()
+            doc.setdefault("active", True)
+            doc.setdefault("created_at", datetime.utcnow())
+            doc.setdefault("updated_at", datetime.utcnow())
+ 
+            res = Machines.coll.insert_one(doc)
+            doc["_id"] = res.inserted_id
+ 
+            return {"success": True, "machine": doc}
+ 
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+ 
+    # -----------------------------------------------------------
+    @staticmethod
+    def update_machine(machine_id, data: dict):
+        try:
+            oid = ObjectId(machine_id)
+        except Exception:
             return False
-
-        result = self.collection.update_one(
-            {"_id": mid},
-            {"$set": {"active": state, "updated_at": datetime.utcnow()}}
-        )
-        return result.modified_count > 0
-
-
-# ------------------------------------------------------------
-# Export instance
-# ------------------------------------------------------------
-Machines = MachineModel()
-
+ 
+        data["updated_at"] = datetime.utcnow()
+ 
+        try:
+            Machines.coll.update_one({"_id": oid}, {"$set": data})
+            return True
+        except Exception:
+            return False
+ 
+    # -----------------------------------------------------------
+    @staticmethod
+    def delete_machine(machine_id):
+        try:
+            oid = ObjectId(machine_id)
+        except Exception:
+            return False
+ 
+        try:
+            Machines.coll.delete_one({"_id": oid})
+            return True
+        except Exception:
+            return False

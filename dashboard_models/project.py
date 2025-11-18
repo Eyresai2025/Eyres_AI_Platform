@@ -4,6 +4,10 @@ from datetime import datetime
 from bson.objectid import ObjectId
 from db import mongo
 
+# IMPORTANT: Model layer should NEVER import ProjectDB or MachineDB from db.py
+# This would create a circular import: db.py → Projects → ProjectDB → db.py
+# Only import: datetime, bson, and db.mongo (the MongoDB singleton)
+
 
 
 class ProjectModel:
@@ -18,7 +22,7 @@ class ProjectModel:
     # --------------------------------------------------------
     # Create a new project
     # --------------------------------------------------------
-    def create_project(self, name, machine_id, description=""):
+    def create_project(self, name, machine_id, description="", type=None):
         if not name:
             return {"success": False, "error": "Project name required"}
 
@@ -26,6 +30,7 @@ class ProjectModel:
             "name": name,
             "machine_id": ObjectId(machine_id) if machine_id else None,
             "description": description,
+            "type": type,
             "cameras": [],  # filled later
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),

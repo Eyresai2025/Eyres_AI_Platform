@@ -50,6 +50,7 @@ class MongoDB:
             self._create_collections()
             self._create_indexes()
             self._create_default_users()
+            self._repair_corrupted_machine_records()
 
             self._initialized = True
 
@@ -121,6 +122,55 @@ class MongoDB:
 
     def collection(self, name: str):
         return self.db[name]
+
+    def _backup_machines_collection(self, path="/tmp/machines_backup.json"):
+        """Optional: one-time quick backup snippet (not required, but safe)."""
+        try:
+            coll = self.db["machines"]
+            docs = list(coll.find({}))
+            import json
+            from bson import json_util
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json_util.dumps(docs))
+        except Exception as e:
+            print(f"⚠️  Backup failed: {e}")
+
+    def _repair_corrupted_machine_records(self):
+        """
+        Idempotent: find machines where `name` is a dict and flatten them.
+        Safe to run on every app start.
+        """
+        try:
+            coll = self.db["machines"]
+        except Exception:
+            return
+
+        fixed = 0
+        for doc in coll.find({}):
+            name_field = doc.get("name")
+            if isinstance(name_field, dict):
+                # flatten nested dict into top-level fields, preserve _id
+                nested = name_field.copy()
+                update_fields = {}
+                for k, v in nested.items():
+                    # avoid accidental overwrite of _id
+                    if k == "_id":
+                        continue
+                    update_fields[k] = v
+
+                # pick canonical name
+                canonical_name = nested.get("name") or nested.get("machine_name") or str(nested)
+                update_fields["name"] = canonical_name
+
+                # update document
+                try:
+                    coll.update_one({"_id": doc["_id"]}, {"$set": update_fields})
+                    fixed += 1
+                except Exception:
+                    continue
+
+        if fixed:
+            print(f"🔧 Repaired {fixed} corrupted machine records.")
 
 
 # Global singleton accessor
@@ -216,9 +266,9 @@ class ProjectDB:
         """Get all projects from database."""
         return self.model.list_projects()
 
-    def add_project(self, name, machine_id, description=""):
+    def add_project(self, name, machine_id, description="", type=None):
         """Add a new project."""
-        result = self.model.create_project(name, machine_id, description=description)
+        result = self.model.create_project(name, machine_id, description=description, type=type)
         if result.get("success"):
             return result["project"]
         return None
@@ -231,7 +281,7 @@ class ProjectDB:
         """Get a project by ID."""
         return self.model.get_project(project_id)
 
-    def update_project(self, project_id, name=None, machine_id=None, description=None):
+    def update_project(self, project_id, name=None, machine_id=None, description=None, type=None):
         """Update project information."""
         data = {}
         if name is not None:
@@ -241,6 +291,8 @@ class ProjectDB:
             data["machine_id"] = ObjectId(machine_id)
         if description is not None:
             data["description"] = description
+        if type is not None:
+            data["type"] = type
         return self.model.update_project(project_id, data)
 
 
@@ -249,36 +301,71 @@ class MachineDB:
 
     def __init__(self):
         self.model = Machines
+        self._coll = mongo.collection("machines")
 
     def get_all_machines(self):
-        """Get all machines from database."""
         return self.model.list_machines()
 
-    def add_machine(self, name, plc_ip="", description=""):
-        """Add a new machine."""
-        result = self.model.create_machine(name, plc_ip=plc_ip, description=description)
+    def _normalize_payload(self, payload: dict) -> dict:
+        """
+        Ensure payload is a flat dict with consistent field names.
+        Accepts payloads created either by old UI or new UI.
+        """
+        p = {}
+        # prefer explicit keys if present
+        p["name"] = payload.get("name") or payload.get("machine_name") or payload.get("label") or None
+        p["description"] = payload.get("description") or payload.get("desc") or None
+        p["ip_address"] = payload.get("ip_address") or payload.get("plc_ip") or None
+        p["plc_brand"] = payload.get("plc_brand") or None
+        p["plc_model"] = payload.get("plc_model") or None
+        p["plc_protocol"] = payload.get("plc_protocol") or None
+        # default flags
+        if "active" in payload:
+            p["active"] = payload["active"]
+        else:
+            p.setdefault("active", True)
+        # remove None values so model layer can fill defaults
+        return {k: v for k, v in p.items() if v is not None}
+
+    def add_machine(self, *args, **kwargs):
+        """
+        Accept either:
+          - add_machine(name_str, plc_ip='', description='')
+          - add_machine(payload_dict)
+        and always write a flattened document via model.create_machine(payload).
+        """
+        # If first arg is a dict, treat it as payload
+        if len(args) == 1 and isinstance(args[0], dict):
+            payload = self._normalize_payload(args[0])
+        else:
+            # old signature: name, plc_ip, description (positional or kwargs)
+            name = kwargs.get("name") if "name" in kwargs else (args[0] if len(args) > 0 else None)
+            plc_ip = kwargs.get("plc_ip") or (args[1] if len(args) > 1 else None)
+            description = kwargs.get("description") or (args[2] if len(args) > 2 else None)
+            payload = self._normalize_payload({
+                "name": name,
+                "ip_address": plc_ip,
+                "description": description
+            })
+
+        if not payload.get("name"):
+            raise ValueError("Machine name is required")
+
+        # call model layer (expects a dict payload)
+        result = self.model.create_machine(payload)
         if result.get("success"):
             return result["machine"]
         return None
 
+    def update_machine(self, machine_id, data: dict):
+        """Update expects a dict payload with fields to change."""
+        return self.model.update_machine(machine_id, data)
+
     def delete_machine(self, machine_id):
-        """Delete a machine by ID."""
         return self.model.delete_machine(machine_id)
 
     def get_machine(self, machine_id):
-        """Get a machine by ID."""
         return self.model.get_machine(machine_id)
-
-    def update_machine(self, machine_id, name=None, plc_ip=None, description=None):
-        """Update machine information."""
-        data = {}
-        if name is not None:
-            data["name"] = name
-        if plc_ip is not None:
-            data["plc_ip"] = plc_ip
-        if description is not None:
-            data["description"] = description
-        return self.model.update_machine(machine_id, data)
 
 
 # ----------------------------------------------------------------------
