@@ -15,10 +15,15 @@ from PyQt5.QtGui import QPalette, QColor, QPixmap, QPainter, QPen, QFont, QFontM
 
 from toasts import ToastManager
 from app_prefs import AppPrefs
+# from project_manager import (
+#     ProjectDialog,
+#     InspectionProject,
+#     load_last_project,
+#     load_project_from_folder,
+#     save_last_project_path,
+# )
 from login_window import LoginWindow
-from dashboard_page import DashboardPage
-from machine_page import MachinePage       
-from project_page import ProjectPage  
+
 
 
 
@@ -230,6 +235,7 @@ class CameraPlaceholderWidget(QWidget):
         super().__init__(parent)
         self.camera_widget = None
         self.is_loaded = False
+        self._project_root = None 
         v = QVBoxLayout(self); v.setAlignment(Qt.AlignCenter)
         self.loading_label = QLabel("Loading Camera Application...")
         self.loading_label.setStyleSheet("color:#adb5bd; font-size:18px; font-style:italic;")
@@ -243,6 +249,18 @@ class CameraPlaceholderWidget(QWidget):
         self.load_button.clicked.connect(self.load_camera_app)
         self.load_button.hide()
         v.addWidget(self.load_button)
+
+    def set_project_root(self, root):
+        from pathlib import Path
+        if root is None:
+            self._project_root = None
+        else:
+            self._project_root = Path(root)
+
+        # if camera widget already exists, push it
+        if self.camera_widget and hasattr(self.camera_widget, "set_project_root"):
+            self.camera_widget.set_project_root(self._project_root)
+
 
     def load_camera_app(self):
         try:
@@ -259,6 +277,9 @@ class CameraPlaceholderWidget(QWidget):
                 )
                 return
 
+            # NEW: pass current project root to CameraWidget if supported
+            if self._project_root is not None and hasattr(self.camera_widget, "set_project_root"):
+                self.camera_widget.set_project_root(self._project_root)
 
             self.loading_label.hide()
             self.load_button.hide()
@@ -838,6 +859,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.prefs = AppPrefs()
+        # self._current_project: InspectionProject | None = None
         self.setWindowTitle("AI Model Training Suite")
         self.setMinimumSize(1100, 700)  # or any size you like
         self.setGeometry(80, 80, 1200, 800)
@@ -846,12 +868,74 @@ class MainWindow(QMainWindow):
         self._auto_collapse_ms = 280
         self._build()
         self._restore_window_session()
-        last_idx = max(0, min(self.prefs.get_last_tool_index(0), 7))
+        # select last tool (or default to 0 = camera)
+        last_idx = max(0, min(self.prefs.get_last_tool_index(0), 4))
         self.switch_tool(last_idx, _from_restore=True)
         try:
             self.toast_info(f"Restored last session: {self._tool_name(last_idx)}", 1400)
         except Exception:
             pass
+
+        # # try restore last project
+        # try:
+        #     last_path = load_last_project()
+        #     if last_path:
+        #         proj = load_project_from_folder(last_path)
+        #     else:
+        #         proj = None
+        # except Exception:
+        #     proj = None
+
+        # if proj:
+        #     self._set_project(proj)
+        # else:
+        #     # show dialog on first launch
+        #     QtCore.QTimer.singleShot(0, self._select_project_dialog)
+        # last_idx = max(0, min(self.prefs.get_last_tool_index(0), 4))
+        # self.switch_tool(last_idx, _from_restore=True)
+        # try:
+        #     self.toast_info(f"Restored last session: {self._tool_name(last_idx)}", 1400)
+        # except Exception:
+        #     pass
+    
+    # # --- Project helpers ---
+    # def current_project(self) -> InspectionProject | None:
+    #     """Return the current InspectionProject object or None."""
+    #     return self._current_project
+
+    # def current_project_root(self):
+    #     """Return Path of current project root or None."""
+    #     return self._current_project.root if self._current_project else None
+    
+    # def _set_project(self, proj: InspectionProject):
+    #     self._current_project = proj
+    #     self.lbl_project.setText(f"Project: {proj.name}  —  {proj.root}")
+    #     save_last_project_path(proj.root)
+
+    #     # propagate to pages that care
+    #     if hasattr(self.page_capture, "set_project_root"):
+    #         self.page_capture.set_project_root(proj.root)
+    #     if hasattr(self.page_annot, "set_project_root"):
+    #         self.page_annot.set_project_root(proj.root)
+    #     if hasattr(self.page_aug, "set_project_root"):
+    #         self.page_aug.set_project_root(proj.root)
+    #     if hasattr(self.page_train, "set_project_root"):
+    #         self.page_train.set_project_root(proj.root)
+    #     if hasattr(self.page_roi, "set_project_root"):
+    #         self.page_roi.set_project_root(proj.root)
+
+    # def _select_project_dialog(self):
+    #     dlg = ProjectDialog(self)
+    #     proj = dlg.exec_and_get()
+    #     if proj is None:
+    #         # user cancelled – keep current project if any
+    #         if not self._current_project:
+    #             self.toast_warn("No project selected. Image capturing will be disabled.")
+    #         return
+    #     self._set_project(proj)
+    #     self.toast_success(f"Project selected: {proj.name}")
+
+
 
     def _restore_sidebar(self):
         try: w = max(160, self.prefs.get_sidebar_width(220))
@@ -903,6 +987,32 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        # # --- Project bar at top ---
+        # proj_bar = QFrame()
+        # proj_bar.setStyleSheet("QFrame { background:#161a1d; border-bottom:1px solid #2b2f33; }")
+        # hb = QHBoxLayout(proj_bar)
+        # hb.setContentsMargins(10, 6, 10, 6)
+
+        # self.lbl_project = QLabel("Project: (none)")
+        # self.lbl_project.setStyleSheet("color:#e9ecef; font-weight:600;")
+        # hb.addWidget(self.lbl_project)
+
+        # hb.addStretch(1)
+
+        # self.btn_change_project = QPushButton("Change Project…")
+        # self.btn_change_project.setFixedHeight(26)
+        # self.btn_change_project.setStyleSheet("""
+        #     QPushButton {
+        #         background:#0d6efd; color:#fff; border:none; padding:4px 10px;
+        #         border-radius:6px; font-size:12px; font-weight:600;
+        #     }
+        #     QPushButton:hover { background:#0b5ed7; }
+        # """)
+        # self.btn_change_project.clicked.connect(self._select_project_dialog)
+        # hb.addWidget(self.btn_change_project)
+
+        # root.addWidget(proj_bar)
+
         # --- Splitter ---
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setHandleWidth(6)
@@ -953,9 +1063,6 @@ class MainWindow(QMainWindow):
         nv.setContentsMargins(8, 24, 8, 24)
         nv.setSpacing(10)
 
-        # keep list of all nav buttons
-        self.nav_buttons = []
-
         # common pill-style button look (like first screenshot)
         sidebar_btn_style = """
             QPushButton {
@@ -981,57 +1088,23 @@ class MainWindow(QMainWindow):
         # icons live in Media/
         media_dir = _app_base_dir() / "Media"
 
-        # Dashboard button
-        dash_icon_path = media_dir / "sidebar_dashboard.png"
-        self.btn_dashboard = ToolButton(
-            "  Dashboard",
-            icon_path=dash_icon_path if dash_icon_path.is_file() else None,
-            tooltip="Overview dashboard.",
-        )
-        self.btn_dashboard.clicked.connect(lambda _: self.switch_tool(0))
-        nv.addWidget(self.btn_dashboard)
-        self.nav_buttons.append(self.btn_dashboard)
-
-        # NEW: Machines button
-        machines_icon_path = media_dir / "sidebar_machines.png"
-        self.btn_machines = ToolButton(
-            "  Machines",
-            icon_path=machines_icon_path if machines_icon_path.is_file() else None,
-            tooltip="Manage machines.",
-        )
-        self.btn_machines.clicked.connect(lambda _: self.switch_tool(1))
-        nv.addWidget(self.btn_machines)
-        self.nav_buttons.append(self.btn_machines)
-
-        # NEW: Projects button
-        projects_icon_path = media_dir / "sidebar_projects.png"
-        self.btn_projects = ToolButton(
-            "  Projects",
-            icon_path=projects_icon_path if projects_icon_path.is_file() else None,
-            tooltip="Manage projects.",
-        )
-        self.btn_projects.clicked.connect(lambda _: self.switch_tool(2))
-        nv.addWidget(self.btn_projects)
-        self.nav_buttons.append(self.btn_projects)
-
-        # text, index, tooltip, icon filename for PIPELINE tools
-        # indices now start from 3
+        # text, index, tooltip, icon filename
         self._buttons_cfg = [
-            ("  Image Capturing",  3,
+            ("  Image Capturing",  0,
                 "Open the camera workspace: connect devices, preview, and record.",
                 "sidebar_capture.png"),
-            ("  Annotation Tool",  4,
+            ("  Annotation Tool",  1,
                 "Label images (boxes/masks). Saves annotations for training.",
                 "sidebar_annotation.png"),
-            ("  Augmentation Tool", 5,
+            ("  Augmentation Tool", 2,
                 "Generate augmented variants of images for robust training.",
                 "sidebar_augment.png"),
-            ("  Model Training",   6,
+            ("  Model Training",   3,
                 "Configure hyperparameters and run model training.",
                 "sidebar_training.png"),
         ]
 
-
+        self.nav_buttons = []
         for text, idx, tip, icon_name in self._buttons_cfg:
             icon_path = media_dir / icon_name
             btn = ToolButton(
@@ -1042,7 +1115,6 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _, i=idx: self.switch_tool(i))
             nv.addWidget(btn)
             self.nav_buttons.append(btn)
-
 
         # --- Measurements / ROI section ---
         nv.addSpacing(12)
@@ -1067,10 +1139,8 @@ class MainWindow(QMainWindow):
             icon_path=roi_icon_path if roi_icon_path.is_file() else None,
             tooltip="Region of Interest & Measurements",
         )
-        self.btn_roi.clicked.connect(lambda _: self.switch_tool(7))
-        nv.addWidget(self.btn_roi)          # <- add this
-        self.nav_buttons.append(self.btn_roi)
-
+        self.btn_roi.clicked.connect(lambda _: self.switch_tool(4))
+        nv.addWidget(self.btn_roi)
 
         nv.addStretch(1)
         sv.addWidget(nav, 1)
@@ -1088,10 +1158,6 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("QStackedWidget{background:#23282d;}")
-        self.page_dashboard = DashboardPage()
-        self.page_machines  = MachinePage()
-        self.page_projects  = ProjectPage()
-
         self.page_capture = CameraPlaceholderWidget(self)
         self.page_annot   = AnnotationPlaceholderWidget(self)
         self.page_aug     = AugmentationPlaceholderWidget(self)
@@ -1101,23 +1167,9 @@ class MainWindow(QMainWindow):
         self.page_train.setStyleSheet("#TrainingHostPage { background: #0f1419; }")
         self.page_roi     = ROIPlaceholderWidget(self)
 
-        # index mapping:
-        # 0 = dashboard, 1 = machines, 2 = projects,
-        # 3 = image capture, 4 = annotation, 5 = augmentation,
-        # 6 = training, 7 = ROI
-        for w in (
-            self.page_dashboard,
-            self.page_machines,
-            self.page_projects,
-            self.page_capture,
-            self.page_annot,
-            self.page_aug,
-            self.page_train,
-            self.page_roi,
-        ):
+        for w in (self.page_capture, self.page_annot, self.page_aug, self.page_train, self.page_roi):
             self.stack.addWidget(w)
         mv.addWidget(self.stack, 1)
-
 
         self.splitter.addWidget(self.side)
         self.splitter.addWidget(self.main_frame)
@@ -1183,80 +1235,31 @@ class MainWindow(QMainWindow):
 
     def _tool_name(self, idx: int) -> str:
         return {
-            0: "Dashboard",
-            1: "Machines",
-            2: "Projects",
-            3: "Image Capturing",
-            4: "Annotation Tool",
-            5: "Augmentation Tool",
-            6: "Model Training",
-            7: "ROI (Measurements)",
+            0: "Image Capturing", 1: "Annotation Tool", 2: "Augmentation Tool",
+            3: "Model Training", 4: "ROI (Measurements)",
         }.get(idx, f"Tool {idx}")
 
-
-    def switch_tool(self, index: int, _from_restore: bool = False):
+    def switch_tool(self, index: int, _from_restore: bool=False):
         self.stack.setCurrentIndex(index)
-
-        # --- Dashboard / Machines / Projects (no pathway) ---
         if index == 0:
-            if not _from_restore:
-                self.toast_info("Dashboard")
-            self.pathway.hide()
-
-        elif index == 1:
-            if not _from_restore:
-                self.toast_info("Machines")
-            self.pathway.hide()
-
-        elif index == 2:
-            if not _from_restore:
-                self.toast_info("Projects")
-            self.pathway.hide()
-
-        # --- Pipeline tools (show pathway) ---
-        elif index == 3:
             self.page_capture.activate()
-            if not _from_restore:
-                self.toast_info("Opening Camera Workspace…")
-            self.pathway.show()
-
-        elif index == 4:
+            if not _from_restore: self.toast_info("Opening Camera Workspace…")
+        elif index == 1:
             self.page_annot.activate()
-            if not _from_restore:
-                self.toast_success("Annotation Tool ready.")
-            self.pathway.show()
-
-        elif index == 5:
+            if not _from_restore: self.toast_success("Annotation Tool ready.")
+        elif index == 2:
             self.page_aug.activate()
-            if not _from_restore:
-                self.toast_info("Loading Augmentation Tool…")
-            self.pathway.show()
-
-        elif index == 6:
+            if not _from_restore: self.toast_info("Loading Augmentation Tool…")
+        elif index == 3:
             self.page_train.activate()
-            if not _from_restore:
-                self.toast_warn("Training feature is in preview.")
-            self.pathway.show()
-
-        elif index == 7:
+            if not _from_restore: self.toast_warn("Training feature is in preview.")
+        elif index == 4:
             self.page_roi.activate()
-            if not _from_restore:
-                self.toast_info("Measurements · ROI")
-            self.pathway.show()
+            if not _from_restore: self.toast_info("Measurements · ROI")
 
-        # Update pathway only for pipeline pages (3..7)
-        if index >= 3:
-            # map 3..7 -> steps 0..3 (ROI shares last step)
-            step = min(max(index - 3, 0), 3)
-            self.pathway.set_states(
-                completed=list(range(step)),
-                active=step
-            )
-
+        self.pathway.set_states(completed=list(range(min(index, 4))), active=min(index, 3))
         if not _from_restore:
-            self.prefs.set_last_tool_index(index)
-            self.prefs.save()
-
+            self.prefs.set_last_tool_index(index); self.prefs.save()
 
     def closeEvent(self, e):
         self._save_window_session()

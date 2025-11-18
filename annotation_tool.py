@@ -782,10 +782,20 @@ class AnnotationTool(QtWidgets.QWidget):
         main_layout = QtWidgets.QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Left panel for thumbnails and controls
-        left_panel = QtWidgets.QWidget()
-        left_panel.setMaximumWidth(320)
-        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        # Left panel for thumbnails and controls (SCROLLABLE)
+        left_container = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_container)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+
+        # Scroll area that wraps the left_container
+        left_scroll = QtWidgets.QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(left_container)
+        left_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        left_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        left_scroll.setMaximumWidth(340)  # a bit wider to account for scrollbar
+
         
         
         # Help button with icon and text
@@ -976,7 +986,7 @@ class AnnotationTool(QtWidgets.QWidget):
         right_layout.addWidget(self.thumbnail_list, 1)
         
         # Add panels to main layout
-        main_layout.addWidget(left_panel, 1)
+        main_layout.addWidget(left_scroll, 1)
         main_layout.addWidget(right_panel, 3)
         
         # Apply dark theme
