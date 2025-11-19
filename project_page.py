@@ -2,7 +2,8 @@
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QComboBox, QFrame, QScrollArea, QMessageBox
+    QLineEdit, QComboBox, QFrame, QScrollArea, QMessageBox,
+    QSizePolicy,
 )
 from PyQt5.QtCore import Qt
 
@@ -11,56 +12,106 @@ from db import ProjectDB, MachineDB
 
 class ProjectPage(QWidget):
     """
-    Stand-alone Projects manager window:
+    Projects manager page:
       - list all projects
       - create / edit / delete
-      - (optionally) jump to camera setup
+      - optional jump to camera setup
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # basic window settings (it will open as separate window)
         self.setWindowTitle("Projects")
         self.resize(900, 600)
 
-        self.main_window = None  # can be set later if needed
+        self.main_window = None
         self.project_db = ProjectDB()
         self.machine_db = MachineDB()
 
-        self.setStyleSheet("background-color: #111;")
+        # page bg + transparent labels (no stripes)
+        self.setObjectName("ProjectsPage")
+        self.setStyleSheet("""
+            QWidget#ProjectsPage {
+                background-color: #111827;
+            }
+            QWidget#ProjectsPage QLabel {
+                background-color: transparent;
+            }
+        """)
+
         self.setup_ui()
 
     # ------------------------------------------------------------
     def set_main_window(self, main_window):
-        """Optional: set MainWindow reference if you want camera setup navigation."""
         self.main_window = main_window
 
     # ------------------------------------------------------------
     def setup_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(25, 25, 25, 25)
+        main_layout.setContentsMargins(24, 20, 24, 24)
+        main_layout.setSpacing(18)
+
+        # ---------- HEADER ROW: title + subtitle + button ----------
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+
+        title_col = QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(2)
 
         title = QLabel("Projects")
-        title.setStyleSheet("color: white; font-size: 26px; font-weight: bold;")
-        main_layout.addWidget(title)
+        title.setStyleSheet("""
+            color: #f9fafb;
+            font-size: 24px;
+            font-weight: 800;
+        """)
 
-        # Add button
+        subtitle = QLabel("Organize inspection recipes, training pipelines and machines.")
+        subtitle.setStyleSheet("""
+            color: #9ca3af;
+            font-size: 11px;
+        """)
+
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+        header_row.addLayout(title_col)
+        header_row.addStretch(1)
+
+        # rounded / modern create button
         add_btn = QPushButton("+ Create Project")
-        add_btn.setFixedWidth(200)
-        add_btn.setStyleSheet(self.button_style())
+        add_btn.setFixedHeight(36)
+        add_btn.setMinimumWidth(170)
+        add_btn.setCursor(Qt.PointingHandCursor)
+        add_btn.setStyleSheet(self.header_button_style())
         add_btn.clicked.connect(self.open_add_form)
-        main_layout.addWidget(add_btn)
-        main_layout.addSpacing(10)
 
-        # Scroll area
+        header_row.addWidget(add_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
+
+        main_layout.addLayout(header_row)
+
+        # ---------- SCROLL AREA ----------
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border: none;")
+        scroll.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollArea > QWidget > QWidget {
+                background-color: transparent;
+            }
+        """)
 
         self.container = QWidget()
         self.container_layout = QVBoxLayout(self.container)
-        self.container_layout.setSpacing(15)
+        self.container_layout.setContentsMargins(0, 8, 0, 24)
+        self.container_layout.setSpacing(14)
+        # center cards horizontally, stack from top
+        self.container_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+
+        # let height hug contents; width can expand but we cap card width
+        self.container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         scroll.setWidget(self.container)
         main_layout.addWidget(scroll)
@@ -68,119 +119,164 @@ class ProjectPage(QWidget):
         self.refresh_list()
 
     # ------------------------------------------------------------
+    # BUTTON STYLES
+    # ------------------------------------------------------------
+    def header_button_style(self):
+        # gradient pill button (header)
+        return """
+        QPushButton {
+            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                              stop:0 #2563eb, stop:1 #38bdf8);
+            color: #ffffff;
+            border: none;
+            border-radius: 18px;
+            padding: 0 20px;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.4px;
+        }
+        QPushButton:hover {
+            background-color: #1d4ed8;
+        }
+        QPushButton:pressed {
+            background-color: #1e40af;
+        }
+        """
+
+    def card_button(self):
+        # SAME pill style as header, just slightly tighter padding
+        return """
+        QPushButton {
+            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                              stop:0 #2563eb, stop:1 #38bdf8);
+            color: #ffffff;
+            border: none;
+            border-radius: 16px;      /* pill shape */
+            padding: 0 16px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        QPushButton:hover {
+            background-color: #1d4ed8;
+        }
+        QPushButton:pressed {
+            background-color: #1e40af;
+        }
+        """
+
+    def card_delete_button(self):
+        # red pill, same rounded look
+        return """
+        QPushButton {
+            background-color: #ef4444;
+            color: #ffffff;
+            border: none;
+            border-radius: 16px;
+            padding: 0 16px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        QPushButton:hover {
+            background-color: #f97373;
+        }
+        QPushButton:pressed {
+            background-color: #b91c1c;
+        }
+        """
+
+    # ------------------------------------------------------------
+    # RENDER PROJECT LIST
+    # ------------------------------------------------------------
     def refresh_list(self):
-        # Clear old
-        for i in reversed(range(self.container_layout.count())):
-            item = self.container_layout.itemAt(i)
-            if item:
-                w = item.widget()
-                if w:
-                    w.deleteLater()
+        layout = self.container_layout
+
+        # clear everything (widgets + layouts + spacers)
+        while layout.count():
+            item = layout.takeAt(0)
+
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+                continue
+
+            sub_layout = item.layout()
+            if sub_layout is not None:
+                while sub_layout.count():
+                    sub_item = sub_layout.takeAt(0)
+                    sub_w = sub_item.widget()
+                    if sub_w is not None:
+                        sub_w.setParent(None)
+                        sub_w.deleteLater()
 
         projects = self.project_db.get_all_projects()
 
         if not projects:
             label = QLabel("No projects created yet.")
             label.setStyleSheet("color: #aaa; font-size: 15px;")
-            self.container_layout.addWidget(label)
+            layout.addWidget(label)
             return
 
         for p in projects:
-            self.container_layout.addWidget(self.project_card(p))
-
-    # ------------------------------------------------------------
-    def button_style(self):
-        return """
-        QPushButton {
-            background-color: #1B5FCC;
-            color: white;
-            padding: 10px;
-            border-radius: 6px;
-            font-size: 14px;
-        }
-        QPushButton:hover {
-            background-color: #2E86FF;
-        }
-        """
-
-    def card_button(self):
-        return """
-            QPushButton {
-                background-color: #1B5FCC;
-                padding: 8px 16px;
-                color: white;
-                border-radius: 6px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #2E86FF;
-            }
-        """
-
-    def card_delete_button(self):
-        return """
-            QPushButton {
-                background-color: #d9534f;
-                padding: 8px 16px;
-                color: white;
-                border-radius: 6px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #ff6b6b;
-            }
-        """
+            layout.addWidget(self.project_card(p))
 
     # ------------------------------------------------------------
     # PROJECT CARD
     # ------------------------------------------------------------
     def project_card(self, p):
         card = QFrame()
+        card.setObjectName("ProjectCard")
         card.setStyleSheet("""
-            QFrame {
-                background-color: #1a1a1a;
-                border: 1px solid #333;
-                border-radius: 12px;
+            QFrame#ProjectCard {
+                background-color: #0f172a;
+                border: 1px solid #1f2937;
+                border-radius: 16px;
             }
-            QFrame:hover {
-                border: 1px solid #444;
-                background-color: #1f1f1f;
+            QFrame#ProjectCard:hover {
+                background-color: #111827;
+                border: 1px solid #2563eb;
             }
         """)
-        card.setMinimumHeight(160)
+        card.setMinimumHeight(130)
+        card.setMaximumWidth(1150)  # so it doesn't stretch edge-to-edge on huge screens
+        card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
-        # Main layout: Left (info) | Right (actions)
         main_layout = QHBoxLayout(card)
-        main_layout.setContentsMargins(25, 20, 25, 20)
-        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(22, 16, 22, 16)
+        main_layout.setSpacing(18)
 
         # LEFT SIDE
         left_layout = QVBoxLayout()
-        left_layout.setSpacing(8)
+        left_layout.setSpacing(6)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setAlignment(Qt.AlignTop)
 
-        # Project Name
         name_label = QLabel(p.get("name", "Unnamed Project"))
         name_label.setStyleSheet("""
-            color: white;
-            font-size: 22px;
-            font-weight: bold;
-            padding-bottom: 4px;
+            color: #e5e7eb;
+            font-size: 18px;
+            font-weight: 700;
+            padding-bottom: 2px;
         """)
         left_layout.addWidget(name_label)
 
-        # Project Type
         proj_type = p.get("type", "Not Set")
         type_label = QLabel(f"Type: {proj_type}")
-        type_label.setStyleSheet("color: #4A9EFF; font-size: 14px; padding: 2px 0;")
+        type_label.setStyleSheet("""
+            color: #60a5fa;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 2px 0;
+        """)
         left_layout.addWidget(type_label)
 
         # Machine info
         machine_container = QWidget()
         machine_layout = QVBoxLayout(machine_container)
         machine_layout.setContentsMargins(0, 0, 0, 0)
-        machine_layout.setSpacing(6)
+        machine_layout.setSpacing(2)
 
         machine_id = p.get("machine_id")
         machine_name = "Unknown Machine"
@@ -198,13 +294,13 @@ class ProjectPage(QWidget):
 
         machine_label = QLabel(f"Machine: {machine_name}")
         machine_label.setStyleSheet("""
-            color: #aaa;
-            font-size: 14px;
-            padding: 4px 0;
+            color: #9ca3af;
+            font-size: 13px;
+            padding: 2px 0;
         """)
         machine_layout.addWidget(machine_label)
 
-        # optional PLC extra text if you later add these fields
+        # optional PLC extra info (if present)
         if machine_info:
             plc_parts = []
             if machine_info.get("plc_brand"):
@@ -212,10 +308,10 @@ class ProjectPage(QWidget):
             if machine_info.get("plc_model"):
                 plc_parts.append(machine_info.get("plc_model"))
             if plc_parts:
-                plc_info = QLabel(f"PLC: {' | '.join(plc_parts)}")
+                plc_info = QLabel(f"PLC: {' · '.join(plc_parts)}")
                 plc_info.setStyleSheet("""
                     color: #4A9EFF;
-                    font-size: 13px;
+                    font-size: 12px;
                     padding: 2px 0;
                 """)
                 machine_layout.addWidget(plc_info)
@@ -235,6 +331,11 @@ class ProjectPage(QWidget):
         btn_edit = QPushButton("Edit")
         btn_camera = QPushButton("Configure Cameras")
         btn_delete = QPushButton("Delete")
+
+        # Make them pill-shaped and clickable like header
+        for b in (btn_edit, btn_camera, btn_delete):
+            b.setFixedHeight(32)
+            b.setCursor(Qt.PointingHandCursor)
 
         btn_edit.setStyleSheet(self.card_button())
         btn_camera.setStyleSheet(self.card_button())
@@ -260,14 +361,12 @@ class ProjectPage(QWidget):
     # CAMERA SETUP REDIRECT
     # ------------------------------------------------------------
     def open_camera_setup(self, project):
-        """Navigate to camera setup page for the selected project (if wired)."""
         if not self.main_window:
             self.show_error(
                 "Camera setup is not wired yet.\n"
                 "You can connect this later via main_window.open_camera_setup()."
             )
             return
-
         self.main_window.open_camera_setup(project)
 
     # ------------------------------------------------------------
@@ -279,8 +378,6 @@ class ProjectPage(QWidget):
     def open_edit_form(self, project):
         self.project_form(mode="edit", project=project)
 
-    # ------------------------------------------------------------
-    # PROJECT FORM (ADD / EDIT)
     # ------------------------------------------------------------
     def project_form(self, mode="add", project=None):
         win = QWidget(self, flags=Qt.Window)
@@ -295,12 +392,10 @@ class ProjectPage(QWidget):
         title.setStyleSheet("color: white; font-size: 22px; font-weight: bold;")
         layout.addWidget(title)
 
-        # Project name
         name = QLineEdit()
         name.setPlaceholderText("Project name")
         name.setStyleSheet(self.input_style())
 
-        # Project type dropdown
         type_select = QComboBox()
         type_select.addItems([
             "Anomaly",
@@ -323,7 +418,6 @@ class ProjectPage(QWidget):
             }
         """)
 
-        # Machine dropdown
         machine_select = QComboBox()
         machine_select.setStyleSheet("""
             QComboBox {
@@ -341,13 +435,9 @@ class ProjectPage(QWidget):
         """)
 
         machines = self.machine_db.get_all_machines()
-
         for m in machines:
-            # Get machine name safely even if it's nested / dict
             raw_name = m.get("name", "")
-
             if isinstance(raw_name, dict):
-                # Try common keys inside the dict, fall back to full dict as string
                 machine_name = (
                     raw_name.get("name")
                     or raw_name.get("machine_name")
@@ -355,10 +445,8 @@ class ProjectPage(QWidget):
                 )
             else:
                 machine_name = str(raw_name)
-
             machine_id = str(m.get("_id") or m.get("id"))
             machine_select.addItem(machine_name, machine_id)
-
 
         if mode == "edit":
             name.setText(project["name"])
@@ -377,7 +465,7 @@ class ProjectPage(QWidget):
         layout.addWidget(machine_select)
 
         save_btn = QPushButton("Save")
-        save_btn.setStyleSheet(self.button_style())
+        save_btn.setStyleSheet(self.header_button_style())
         layout.addWidget(save_btn)
 
         def save_action():
@@ -385,15 +473,15 @@ class ProjectPage(QWidget):
                 self.show_error("Project name is required")
                 return
 
-            machine_id = machine_select.currentData()
-            if not machine_id:
+            machine_id_val = machine_select.currentData()
+            if not machine_id_val:
                 self.show_error("Please select a machine")
                 return
 
             if mode == "add":
                 result = self.project_db.add_project(
                     name=name.text().strip(),
-                    machine_id=machine_id,
+                    machine_id=machine_id_val,
                     description="",
                     type=type_select.currentText()
                 )
@@ -406,7 +494,7 @@ class ProjectPage(QWidget):
                 success = self.project_db.update_project(
                     project_id,
                     name=name.text().strip(),
-                    machine_id=machine_id,
+                    machine_id=machine_id_val,
                     description="",
                     type=type_select.currentText()
                 )
@@ -422,8 +510,6 @@ class ProjectPage(QWidget):
         win.show()
 
     # ------------------------------------------------------------
-    # DELETE PROJECT
-    # ------------------------------------------------------------
     def delete_project(self, project):
         confirm = QMessageBox.question(
             self,
@@ -431,7 +517,6 @@ class ProjectPage(QWidget):
             f"Are you sure you want to delete '{project['name']}'?",
             QMessageBox.Yes | QMessageBox.No
         )
-
         if confirm == QMessageBox.No:
             return
 

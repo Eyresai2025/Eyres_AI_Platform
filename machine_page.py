@@ -3,11 +3,10 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QFrame, QScrollArea, QMessageBox, QGridLayout,
-    QDialog, QComboBox
+    QDialog, QComboBox, QSizePolicy
 )
 from PyQt5.QtCore import Qt
 from bson.objectid import ObjectId
-
 from db import ProjectDB, MachineDB
 
 
@@ -17,7 +16,18 @@ class MachinePage(QWidget):
         super().__init__()
         self.user = user
         self.machine_db = MachineDB()
-        self.setStyleSheet("background-color: #111;")
+
+        # page bg + make all labels transparent (kills stripes)
+        self.setObjectName("MachinesPage")
+        self.setStyleSheet("""
+            QWidget#MachinesPage {
+                background-color: #111827;
+            }
+            QWidget#MachinesPage QLabel {
+                background-color: transparent;
+            }
+        """)
+
         self.setup_ui()
 
     # ------------------------------------------------------------
@@ -26,30 +36,68 @@ class MachinePage(QWidget):
     def setup_ui(self):
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(25, 25, 25, 25)
+        main_layout.setContentsMargins(24, 20, 24, 24)
+        main_layout.setSpacing(12)
 
-        # TITLE
+        # ---------- HEADER ROW: title + subtitle + button ----------
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+
+        title_col = QVBoxLayout()
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(2)
+
         title = QLabel("Machines")
-        title.setStyleSheet("color: white; font-size: 26px; font-weight: bold;")
-        main_layout.addWidget(title)
+        title.setStyleSheet("""
+            color: #f9fafb;
+            font-size: 24px;
+            font-weight: 800;
+        """)
 
-        # ADD BUTTON
+        subtitle = QLabel("Configure inspection cells, PLC connectivity and line endpoints.")
+        subtitle.setStyleSheet("""
+            color: #9ca3af;
+            font-size: 11px;
+        """)
+
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+        header_row.addLayout(title_col)
+        header_row.addStretch(1)
+
+        # rounded / modern add button
         add_btn = QPushButton("+ Add Machine")
-        add_btn.setFixedWidth(180)
-        add_btn.setStyleSheet(self.button_style())
+        add_btn.setFixedHeight(36)
+        add_btn.setMinimumWidth(150)
+        add_btn.setCursor(Qt.PointingHandCursor)
+        add_btn.setStyleSheet(self.add_button_style())
         add_btn.clicked.connect(self.open_add_form)
-        main_layout.addWidget(add_btn)
-        main_layout.addSpacing(10)
+        header_row.addWidget(add_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
 
-        # SCROLL AREA (MACHINE LIST)
+        main_layout.addLayout(header_row)
+
+        # ---------- SCROLL AREA (MACHINE LIST) ----------
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border: none;")
+        scroll.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollArea > QWidget > QWidget {
+                background-color: transparent;
+            }
+        """)
 
         self.container = QWidget()
         self.container_layout = QVBoxLayout(self.container)
-        self.container_layout.setSpacing(15)
+        self.container_layout.setContentsMargins(0, 12, 0, 24)
+        self.container_layout.setSpacing(12)
+        # center cards horizontally, stack from top
+        self.container_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
+        self.container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         scroll.setWidget(self.container)
         main_layout.addWidget(scroll)
 
@@ -59,41 +107,67 @@ class MachinePage(QWidget):
     # RENDER MACHINE LIST
     # ------------------------------------------------------------
     def refresh_list(self):
+        # -------- clear the layout completely (widgets + spacers) --------
+        layout = self.container_layout
+        while layout.count():
+            item = layout.takeAt(0)
 
-        # Clear previous widgets
-        for i in reversed(range(self.container_layout.count())):
-            item = self.container_layout.itemAt(i)
             w = item.widget()
-            if w:
+            if w is not None:
+                w.setParent(None)
                 w.deleteLater()
+                continue
 
+            # if it's a nested layout, clear it too
+            sub_layout = item.layout()
+            if sub_layout is not None:
+                while sub_layout.count():
+                    sub_item = sub_layout.takeAt(0)
+                    sub_w = sub_item.widget()
+                    if sub_w is not None:
+                        sub_w.setParent(None)
+                        sub_w.deleteLater()
+            # QSpacerItem is handled just by letting 'item' go out of scope
+
+        # -------- rebuild the cards --------
         machines = self.machine_db.get_all_machines()
 
         if not machines:
             empty_label = QLabel("No machines added yet.")
             empty_label.setStyleSheet("color: #aaa; font-size: 15px;")
-            self.container_layout.addWidget(empty_label)
+            layout.addWidget(empty_label)
             return
 
         for m in machines:
-            self.container_layout.addWidget(self.machine_card(m))
+            layout.addWidget(self.machine_card(m))
 
     # ------------------------------------------------------------
-    # BASIC BUTTON STYLE
+    # ADD BUTTON STYLE (rounded / modern)
     # ------------------------------------------------------------
-    def button_style(self):
+    def add_button_style(self):
         return """
         QPushButton {
-            background-color: #1B5FCC;
-            color: white;
-            border-radius: 6px;
-            padding: 10px;
-            font-size: 14px;
+            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                              stop:0 #2563eb, stop:1 #38bdf8);
+            color: #ffffff;
+            border: none;
+            border-radius: 18px;
+            padding: 0 18px;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
         }
         QPushButton:hover {
-            background-color: #2E86FF;
+            background-color: #1d4ed8;
+        }
+        QPushButton:pressed {
+            background-color: #1e40af;
         }
         """
+
+    # keep old name if you use it anywhere else
+    def button_style(self):
+        return self.add_button_style()
 
     # ------------------------------------------------------------
     # MACHINE CARD WIDGET
@@ -101,37 +175,40 @@ class MachinePage(QWidget):
     def machine_card(self, m):
 
         card = QFrame()
+        card.setObjectName("MachineCard")
         card.setStyleSheet("""
-            QFrame {
-                background-color: #1a1a1a;
-                border: 1px solid #333;
-                border-radius: 12px;
+            QFrame#MachineCard {
+                background-color: #0f172a;
+                border: 1px solid #1f2937;
+                border-radius: 16px;
             }
-            QFrame:hover {
-                border: 1px solid #444;
-                background-color: #1f1f1f;
+            QFrame#MachineCard:hover {
+                background-color: #111827;
+                border: 1px solid #2563eb;
             }
         """)
-        card.setMinimumHeight(160)
+        card.setMinimumHeight(130)
+        card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         # Main layout: Left (info) | Right (status + buttons)
         main_layout = QHBoxLayout(card)
-        main_layout.setContentsMargins(25, 20, 25, 20)
-        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(22, 16, 22, 16)
+        main_layout.setSpacing(18)
 
         # LEFT SIDE: Machine Information
         left_layout = QVBoxLayout()
-        left_layout.setSpacing(8)
+        left_layout.setSpacing(6)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setAlignment(Qt.AlignTop)
 
         # Machine Name
         name_label = QLabel(f"{m['name']}")
         name_label.setStyleSheet("""
-            color: white;
-            font-size: 22px;
-            font-weight: bold;
-            padding-bottom: 4px;
+            color: #e5e7eb;
+            font-size: 18px;
+            font-weight: 700;
+            padding-bottom: 2px;
+            background-color: transparent;
         """)
         left_layout.addWidget(name_label)
 
@@ -139,46 +216,49 @@ class MachinePage(QWidget):
         desc_text = m.get("description", "")
         if desc_text:
             desc = QLabel(desc_text)
-            desc.setStyleSheet("""
-                color: #aaa;
-                font-size: 14px;
-                padding-bottom: 8px;
-            """)
             desc.setWordWrap(True)
+            desc.setStyleSheet("""
+                color: #9ca3af;
+                font-size: 13px;
+                padding-bottom: 4px;
+                background-color: transparent;
+            """)
             left_layout.addWidget(desc)
 
         # PLC Information Section
         plc_container = QWidget()
         plc_layout = QVBoxLayout(plc_container)
         plc_layout.setContentsMargins(0, 0, 0, 0)
-        plc_layout.setSpacing(6)
+        plc_layout.setSpacing(2)
 
         # PLC Brand/Model/Protocol
         plc_info_parts = []
         if m.get("plc_brand"):
-            plc_info_parts.append(f"PLC: {m.get('plc_brand', '')}")
+            plc_info_parts.append(m.get("plc_brand", ""))
         if m.get("plc_model"):
             plc_info_parts.append(m.get("plc_model", ""))
         if m.get("plc_protocol"):
-            plc_info_parts.append(f"({m.get('plc_protocol', '')})")
+            plc_info_parts.append(m.get("plc_protocol", ""))
 
         if plc_info_parts:
-            plc_label = QLabel(" | ".join(plc_info_parts))
+            plc_label = QLabel(" · ".join(plc_info_parts))
             plc_label.setStyleSheet("""
-                color: #4A9EFF;
-                font-size: 14px;
+                color: #60a5fa;
+                font-size: 13px;
                 font-weight: 500;
-                padding: 4px 0;
+                padding: 2px 0;
+                background-color: transparent;
             """)
             plc_layout.addWidget(plc_label)
 
         # IP Address
         if m.get("ip_address"):
-            ip_label = QLabel(f"📍 IP: {m.get('ip_address', '')}")
+            ip_label = QLabel(f"IP: {m.get('ip_address', '')}")
             ip_label.setStyleSheet("""
-                color: #888;
-                font-size: 13px;
+                color: #6b7280;
+                font-size: 12px;
                 padding: 2px 0;
+                background-color: transparent;
             """)
             plc_layout.addWidget(ip_label)
 
@@ -186,46 +266,60 @@ class MachinePage(QWidget):
             left_layout.addWidget(plc_container)
 
         left_layout.addStretch()
+        main_layout.addLayout(left_layout, 3)
 
         # RIGHT SIDE: Status and Actions
         right_layout = QVBoxLayout()
-        right_layout.setSpacing(12)
+        right_layout.setSpacing(10)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setAlignment(Qt.AlignTop | Qt.AlignRight)
 
-        # Status Badge
-        status = "ACTIVE" if m.get("active") else "DISABLED"
-        status_color = "#3CCF4E" if m.get("active") else "#d9534f"
-        status_bg = "#1a3a1a" if m.get("active") else "#3a1a1a"
+        # -------- modern status chip --------
+        is_active = bool(m.get("active"))
+        status_text = "Active" if is_active else "Disabled"
+        status_color = "#22c55e" if is_active else "#f97373"
+        status_bg = "rgba(34,197,94,0.14)" if is_active else "rgba(248,113,113,0.14)"
 
         status_frame = QFrame()
+        status_frame.setObjectName("StatusChip")
         status_frame.setStyleSheet(f"""
-            QFrame {{
+            QFrame#StatusChip {{
                 background-color: {status_bg};
+                border-radius: 999px;
                 border: 1px solid {status_color};
-                border-radius: 6px;
-                padding: 6px 12px;
             }}
         """)
         status_layout = QHBoxLayout(status_frame)
-        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setContentsMargins(10, 4, 12, 4)
+        status_layout.setSpacing(6)
 
-        status_label = QLabel(status)
+        dot = QLabel()
+        dot.setFixedSize(8, 8)
+        dot.setStyleSheet(f"background-color: {status_color}; border-radius: 4px;")
+
+        status_label = QLabel(status_text)
         status_label.setStyleSheet(f"""
             color: {status_color};
-            font-size: 12px;
-            font-weight: bold;
-            letter-spacing: 1px;
+            font-size: 11px;
+            font-weight: 600;
         """)
-        status_layout.addWidget(status_label)
-        right_layout.addWidget(status_frame)
 
-        # Action Buttons
+        status_layout.addWidget(dot)
+        status_layout.addWidget(status_label)
+
+        right_layout.addWidget(status_frame, 0, Qt.AlignRight | Qt.AlignTop)
+
+        # -------- Action Buttons --------
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
 
         btn_edit = QPushButton("Edit")
         btn_delete = QPushButton("Delete")
+
+        # make them pill buttons like "+ Add Machine"
+        for b in (btn_edit, btn_delete):
+            b.setFixedHeight(32)
+            b.setCursor(Qt.PointingHandCursor)
 
         btn_edit.setStyleSheet(self.card_button())
         btn_delete.setStyleSheet(self.card_delete_button())
@@ -236,41 +330,53 @@ class MachinePage(QWidget):
         btn_layout.addWidget(btn_edit)
         btn_layout.addWidget(btn_delete)
         right_layout.addLayout(btn_layout)
-
         right_layout.addStretch()
 
-        # Combine left and right
-        main_layout.addLayout(left_layout, 3)  # Left takes 3 parts
-        main_layout.addLayout(right_layout, 1)  # Right takes 1 part
+        main_layout.addLayout(right_layout, 1)
 
         return card
 
     def card_button(self):
+        # gradient pill, matching Add Machine style (smaller)
         return """
-            QPushButton {
-                background-color: #1B5FCC;
-                padding: 8px 16px;
-                color: white;
-                border-radius: 6px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #2E86FF;
-            }
+        QPushButton {
+            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                              stop:0 #2563eb, stop:1 #38bdf8);
+            color: #ffffff;
+            border: none;
+            border-radius: 16px;
+            padding: 0 16px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        QPushButton:hover {
+            background-color: #1d4ed8;
+        }
+        QPushButton:pressed {
+            background-color: #1e40af;
+        }
         """
 
     def card_delete_button(self):
+        # red pill version for delete
         return """
-            QPushButton {
-                background-color: #d9534f;
-                padding: 8px 16px;
-                color: white;
-                border-radius: 6px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #ff6b6b;
-            }
+        QPushButton {
+            background-color: #ef4444;
+            color: #ffffff;
+            border: none;
+            border-radius: 16px;
+            padding: 0 16px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        QPushButton:hover {
+            background-color: #f97373;
+        }
+        QPushButton:pressed {
+            background-color: #b91c1c;
+        }
         """
 
     # ------------------------------------------------------------
@@ -350,12 +456,6 @@ class MachinePage(QWidget):
 # Add Machine Dialog with PLC Configuration
 # ===================================================================
 
-"""
-Add Machine Dialog with PLC Configuration
-Dialog for adding/editing machines with PLC brand, model, and protocol selection.
-"""
-
-# PLC Configuration Data
 PLC_DATA = {
     "Siemens": {
         "models": ["S7-200", "S7-300", "S7-400", "S7-1200", "S7-1500", "LOGO!"],
@@ -394,22 +494,12 @@ class AddMachineDialog(QDialog):
     """
 
     def __init__(self, parent=None, machine=None):
-        """
-        Initialize the dialog.
-
-        Args:
-            parent: Parent widget
-            machine: Optional machine data for edit mode
-        """
         super().__init__(parent)
         self.machine = machine
         self.machine_db = MachineDB()
         self.result = None
 
-        if machine:
-            self.setWindowTitle("Edit Machine")
-        else:
-            self.setWindowTitle("Add Machine")
+        self.setWindowTitle("Edit Machine" if machine else "Add Machine")
 
         self.setMinimumWidth(400)
         self.setStyleSheet("""
@@ -484,54 +574,50 @@ class AddMachineDialog(QDialog):
         self.plc_brand_combo.currentTextChanged.connect(self.on_brand_changed)
         layout.addWidget(self.plc_brand_combo)
 
-        # PLC Model Series
+        # Model
         layout.addWidget(QLabel("Model Series"))
         self.plc_model_combo = QComboBox()
         self.plc_model_combo.addItem("Select Model", None)
         self.plc_model_combo.setEnabled(False)
         layout.addWidget(self.plc_model_combo)
 
-        # Communication Protocol
+        # Protocol
         layout.addWidget(QLabel("Communication Protocol"))
         self.plc_protocol_combo = QComboBox()
         self.plc_protocol_combo.addItem("Select Protocol", None)
         self.plc_protocol_combo.setEnabled(False)
         layout.addWidget(self.plc_protocol_combo)
 
-        # IP Address (optional)
+        # IP
         layout.addWidget(QLabel("IP Address (Optional)"))
         self.ip_input = QLineEdit()
         self.ip_input.setPlaceholderText("e.g., 192.168.1.100")
         layout.addWidget(self.ip_input)
 
-        # Load existing machine data if editing
+        # Pre-fill when editing
         if self.machine:
             self.name_input.setText(self.machine.get("name", ""))
             self.desc_input.setText(self.machine.get("description", ""))
             self.ip_input.setText(self.machine.get("ip_address", ""))
 
-            # Load PLC configuration
             plc_brand = self.machine.get("plc_brand", "")
             if plc_brand:
-                index = self.plc_brand_combo.findText(plc_brand)
-                if index >= 0:
-                    self.plc_brand_combo.setCurrentIndex(index)
-                    # Trigger update to populate model and protocol
+                idx = self.plc_brand_combo.findText(plc_brand)
+                if idx >= 0:
+                    self.plc_brand_combo.setCurrentIndex(idx)
                     self.on_brand_changed(plc_brand)
 
-                    # Set model
                     plc_model = self.machine.get("plc_model", "")
                     if plc_model:
-                        model_index = self.plc_model_combo.findText(plc_model)
-                        if model_index >= 0:
-                            self.plc_model_combo.setCurrentIndex(model_index)
+                        midx = self.plc_model_combo.findText(plc_model)
+                        if midx >= 0:
+                            self.plc_model_combo.setCurrentIndex(midx)
 
-                    # Set protocol
                     plc_protocol = self.machine.get("plc_protocol", "")
                     if plc_protocol:
-                        protocol_index = self.plc_protocol_combo.findText(plc_protocol)
-                        if protocol_index >= 0:
-                            self.plc_protocol_combo.setCurrentIndex(protocol_index)
+                        pidx = self.plc_protocol_combo.findText(plc_protocol)
+                        if pidx >= 0:
+                            self.plc_protocol_combo.setCurrentIndex(pidx)
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -551,9 +637,7 @@ class AddMachineDialog(QDialog):
         self.setLayout(layout)
 
     def on_brand_changed(self, brand):
-        """Update model and protocol dropdowns when brand changes."""
         if not brand or brand == "Select PLC Brand":
-            # Clear and disable model and protocol dropdowns
             self.plc_model_combo.clear()
             self.plc_model_combo.addItem("Select Model", None)
             self.plc_model_combo.setEnabled(False)
@@ -563,32 +647,26 @@ class AddMachineDialog(QDialog):
             self.plc_protocol_combo.setEnabled(False)
             return
 
-        # Get PLC data for selected brand
         plc_info = PLC_DATA.get(brand)
         if not plc_info:
             return
 
-        # Update model dropdown
         self.plc_model_combo.clear()
         self.plc_model_combo.addItem("Select Model", None)
         self.plc_model_combo.addItems(plc_info["models"])
         self.plc_model_combo.setEnabled(True)
 
-        # Update protocol dropdown
         self.plc_protocol_combo.clear()
         self.plc_protocol_combo.addItem("Select Protocol", None)
         self.plc_protocol_combo.addItems(plc_info["protocols"])
         self.plc_protocol_combo.setEnabled(True)
 
     def save(self):
-        """Save the machine data via MachineDB."""
         name = self.name_input.text().strip()
-
         if not name:
             QMessageBox.warning(self, "Missing", "Machine name cannot be empty")
             return
 
-        # Get PLC configuration values
         plc_brand = self.plc_brand_combo.currentText()
         if plc_brand == "Select PLC Brand":
             plc_brand = None
@@ -606,7 +684,6 @@ class AddMachineDialog(QDialog):
 
         try:
             if self.machine:
-                # Update existing
                 machine_id = str(self.machine.get("_id") or self.machine.get("id"))
                 update_data = {
                     "name": name,
@@ -616,7 +693,6 @@ class AddMachineDialog(QDialog):
                     "plc_model": plc_model,
                     "plc_protocol": plc_protocol,
                 }
-                # remove None fields
                 update_data = {k: v for k, v in update_data.items() if v is not None}
 
                 success = self.machine_db.update_machine(machine_id, update_data)
@@ -627,7 +703,6 @@ class AddMachineDialog(QDialog):
                 else:
                     QMessageBox.warning(self, "Error", "Failed to update machine.")
             else:
-                # Add new
                 data = {
                     "name": name,
                     "description": description,
@@ -647,5 +722,4 @@ class AddMachineDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Error saving machine: {str(e)}")
 
     def get_result(self):
-        """Return result dict or None."""
         return self.result

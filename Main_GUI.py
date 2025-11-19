@@ -892,8 +892,9 @@ class MainWindow(QMainWindow):
                 self.btn_logout.setText("  Logout") # text when expanded
 
 
-    def __init__(self):
+    def __init__(self, user=None):
         super().__init__()
+        self.current_user = user or {}
         self.prefs = AppPrefs()
         self.setWindowTitle("AI Model Training Suite")
         self.setMinimumSize(1100, 700)  # or any size you like
@@ -1206,7 +1207,11 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("QStackedWidget{background:#23282d;}")
-        self.page_dashboard = DashboardPage()
+        if isinstance(self.current_user, dict):
+            username = self.current_user.get("username") or self.current_user.get("name")
+        else:
+            username = str(self.current_user) if self.current_user else None
+        self.page_dashboard = DashboardPage(username=username)
         self.page_machines  = MachinePage()
         self.page_projects  = ProjectPage()
 
@@ -1258,12 +1263,68 @@ class MainWindow(QMainWindow):
         self._hover_timer.setSingleShot(True)
         self._hover_timer.timeout.connect(self._collapse_sidebar)
     
-        
+    def _confirm_cameras_connected(self) -> bool:
+        """
+        Show a nice yes/no popup asking if cameras are connected.
+        Returns True if user clicks Yes, False otherwise.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Camera Check")
+
+        box.setText(
+            "Are your cameras powered ON and connected?\n\n"
+            "Click 'Yes' to start the Live pipeline,\n"
+            "or 'No' to cancel."
+        )
+
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.Yes)
+
+        # Dark-theme styling
+        box.setStyleSheet("""
+            QMessageBox {
+                background-color: #111111;
+            }
+            QLabel {
+                color: #EEEEEE;
+                font-size: 12pt;
+            }
+            QPushButton {
+                min-width: 90px;
+                padding: 6px 14px;
+                border-radius: 6px;
+                background-color: #2E86FF;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #4095FF;
+            }
+            QPushButton:pressed {
+                background-color: #245FCC;
+            }
+        """)
+
+        result = box.exec_()   # PyQt5
+        return result == QMessageBox.Yes
+ 
     def _on_live_clicked(self):
         """
         Open the Live pipeline window (from live.py).
         Adjust import / class name here if needed.
         """
+
+        # ---- NEW: first ask if cameras are connected ----
+        if not self._confirm_cameras_connected():
+            # Optional: show a toast if user picked No
+            if hasattr(self, "toast_info"):
+                try:
+                    self.toast_info("Connect cameras and try again.", 2000)
+                except Exception:
+                    pass
+            return
+        # -------------------------------------------------
+
         try:
             # ensure current folder is on sys.path
             here = os.path.dirname(__file__)
@@ -1301,6 +1362,7 @@ class MainWindow(QMainWindow):
         self._live_window.show()
         self._live_window.raise_()
         self._live_window.activateWindow()
+
     
     def _on_logout_clicked(self):
         """
@@ -1477,7 +1539,7 @@ def apply_dark_theme(app: QApplication):
 
 # ============================= Entrypoint =============================
 def after_login(user):
-    main_window = MainWindow()
+    main_window = MainWindow(user=user)
     main_window.show()
 
 def main():
