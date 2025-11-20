@@ -50,7 +50,7 @@ class MachinePage(QWidget):
 
         title = QLabel("Machines")
         title.setStyleSheet("""
-            color: #f9fafb;
+            color: #0d6efd;
             font-size: 24px;
             font-weight: 800;
         """)

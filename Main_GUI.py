@@ -88,14 +88,13 @@ class ToolButton(QPushButton):
         self.full_text = text          # remember label
         self._compact = False          # current mode
 
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
         if tooltip:
             self.setToolTip(tooltip)
 
         self.setFixedHeight(46)
         self.setCursor(Qt.PointingHandCursor)
-
-        # not checkable → no persistent selected state
-        self.setCheckable(False)
 
         if icon_path is not None:
             self.setIcon(QIcon(str(icon_path)))
@@ -125,6 +124,10 @@ class ToolButton(QPushButton):
                     font-size: 13px;
                     font-weight: 600;
                 }
+                QPushButton:checked {
+                    background-color: #0d6efd;
+                    color: #ffffff;
+                }
                 QPushButton::menu-indicator { width: 0px; }
                 QPushButton:hover  { background-color: #3b4045; }
                 QPushButton:pressed { background-color: #3b4045; color: #f8f9fa; }
@@ -141,6 +144,10 @@ class ToolButton(QPushButton):
                     font-size: 13px;
                     font-weight: 600;
                     text-align: left;
+                }
+                QPushButton:checked {
+                    background-color: #0d6efd;
+                    color: #ffffff;
                 }
                 QPushButton::menu-indicator { width: 0px; }
                 QPushButton:hover  { background-color: #495057; }
@@ -608,27 +615,30 @@ class AspectLogoLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._orig = QPixmap()
+        self._last_size = QSize()
         self.setAlignment(Qt.AlignCenter)
 
     def setPixmap(self, pm: QPixmap):
         self._orig = pm
+        self._last_size = QSize()   # force re-scale on next resize
         super().setPixmap(pm)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if not self._orig.isNull():
-            # Do NOT upscale: only shrink if needed
-            target_w = min(self.width(), self._orig.width())
-            target_h = min(self.height(), self._orig.height())
+        if self._orig.isNull():
+            return
 
-            scaled = self._orig.scaled(
-                target_w,
-                target_h,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            super().setPixmap(scaled)
+        # avoid re-scaling on every tiny animation step
+        if self.size() == self._last_size:
+            return
+        self._last_size = self.size()
 
+        scaled = self._orig.scaled(
+            self.size(),             # use available space
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+        QLabel.setPixmap(self, scaled)
 
 # ============================= ROI Host =============================
 
@@ -877,7 +887,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "measure_line"):
             self.measure_line.setVisible(not compact)
 
-        # swap logo PNG ↔ ICO depending on state
         if hasattr(self, "logo_label"):
             if compact and getattr(self, "logo_pixmap_compact", None) is not None:
                 self.logo_label.setPixmap(self.logo_pixmap_compact)
@@ -887,7 +896,7 @@ class MainWindow(QMainWindow):
         # --- NEW: compact behavior for Logout button ---
         if hasattr(self, "btn_logout"):
             if compact:
-                self.btn_logout.setText("")         # icon only
+                self.btn_logout.setText("")        
             else:
                 self.btn_logout.setText("  Logout") # text when expanded
 
@@ -905,10 +914,9 @@ class MainWindow(QMainWindow):
         self._live_window = None 
         self._build()
         self._restore_window_session()
-        last_idx = max(0, min(self.prefs.get_last_tool_index(0), 7))
-        self.switch_tool(last_idx, _from_restore=True)
+        self.switch_tool(0, _from_restore=True)
         try:
-            self.toast_info(f"Restored last session: {self._tool_name(last_idx)}", 1400)
+            self.toast_info("Welcome back · Dashboard", 1400)
         except Exception:
             pass
 
@@ -1163,6 +1171,19 @@ class MainWindow(QMainWindow):
         self.btn_roi.clicked.connect(lambda _: self.switch_tool(7))
         nv.addWidget(self.btn_roi)          # <- add this
         self.nav_buttons.append(self.btn_roi)
+
+        # map stack index -> corresponding nav button
+        self._tool_button_map = {
+            0: self.btn_dashboard,
+            1: self.btn_machines,
+            2: self.btn_projects,
+            3: self.nav_buttons[3],   # Image Capturing
+            4: self.nav_buttons[4],   # Annotation
+            5: self.nav_buttons[5],   # Augmentation
+            6: self.nav_buttons[6],   # Model Training
+            7: self.btn_roi,          # ROI
+        }
+
 
         nv.addSpacing(10) 
         nv.addStretch(1)
@@ -1497,9 +1518,12 @@ class MainWindow(QMainWindow):
                 active=step
             )
 
-        if not _from_restore:
-            self.prefs.set_last_tool_index(index)
-            self.prefs.save()
+        for b in self.nav_buttons:
+            b.setChecked(False)
+
+        btn = getattr(self, "_tool_button_map", {}).get(index)
+        if btn is not None:
+            btn.setChecked(True)
 
 
     def closeEvent(self, e):

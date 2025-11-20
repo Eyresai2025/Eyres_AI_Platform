@@ -62,7 +62,7 @@ class ProjectPage(QWidget):
 
         title = QLabel("Projects")
         title.setStyleSheet("""
-            color: #f9fafb;
+            color: #0d6efd;
             font-size: 24px;
             font-weight: 800;
         """)
@@ -240,7 +240,6 @@ class ProjectPage(QWidget):
             }
         """)
         card.setMinimumHeight(130)
-        card.setMaximumWidth(1150)  # so it doesn't stretch edge-to-edge on huge screens
         card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         main_layout = QHBoxLayout(card)
