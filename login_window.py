@@ -998,7 +998,6 @@ class LoginWindow(QWidget):
         return page
 
     # ---------- LOGIN & SIGNUP LOGIC ----------
-
     def try_login(self):
         username = self.username.text().strip()
         password = self.password.text().strip()
@@ -1013,9 +1012,13 @@ class LoginWindow(QWidget):
             return
 
         if self.on_login_success:
+            # 1) Open the main window
             self.on_login_success(user)
+            # 2) Close this login window so it doesn't hang around
+            self.close()
         else:
             QMessageBox.information(self, "Success", f"Welcome, {username}!")
+
 
     def handle_signup_inline(self):
         username = self.ed_username.text().strip()
@@ -1077,6 +1080,6 @@ class LoginWindow(QWidget):
         QMessageBox.information(self, "Success", "Password updated!")
 
         # Back to login with username prefilled
-        self.show_login_page()
+        # self.show_login_page()
         self.username.setText(username)
         self.password.setText("")

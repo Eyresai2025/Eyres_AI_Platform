@@ -93,7 +93,7 @@ class ToolButton(QPushButton):
         if tooltip:
             self.setToolTip(tooltip)
 
-        self.setFixedHeight(46)
+        self.setFixedHeight(34)
         self.setCursor(Qt.PointingHandCursor)
 
         if icon_path is not None:
@@ -842,6 +842,122 @@ class ROIPlaceholderWidget(QtWidgets.QWidget):
                 )
 
 
+class PLCPlaceholderWidget(QtWidgets.QWidget):
+    """
+    Embeds ModernPLCWindow from PLC_GUI.py into the main stack.
+    We reuse its central widget and stylesheet so it looks the same.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._plc_window = None
+        self._embedded = None
+        self.is_loaded = False
+
+        self.setObjectName("PLC_HOST")
+        v = QtWidgets.QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        self._loading_box = QtWidgets.QWidget()
+        lbx = QtWidgets.QVBoxLayout(self._loading_box)
+        lbx.setContentsMargins(0, 40, 0, 0)
+        lbx.setSpacing(10)
+
+        title = QtWidgets.QLabel("PLC UI · Live Monitoring")
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        title.setStyleSheet("color:#e9ecef; font-weight:800; font-size:18px;")
+
+        self.loading_label = QtWidgets.QLabel("Launch PLC Live UI")
+        self.loading_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.loading_label.setStyleSheet("color:#adb5bd; font-size:14px;")
+
+        self.load_button = QtWidgets.QPushButton("Launch PLC LIVE")
+        self.load_button.setFixedHeight(38)
+        self.load_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.load_button.setStyleSheet("""
+            QPushButton {
+                background:#0d9488;
+                color:#fff;
+                border:none;
+                border-radius:8px;
+                font-weight:700;
+                padding:8px 18px;
+            }
+            QPushButton:hover { background:#0f766e; }
+        """)
+        self.load_button.clicked.connect(self.load_plc_ui)
+
+        for w in (title, self.loading_label, self.load_button):
+            lbx.addWidget(w, 0, QtCore.Qt.AlignCenter)
+
+        v.addWidget(self._loading_box)
+
+    def activate(self):
+        """Called when sidebar PLC LIVE button is clicked."""
+        if not self.is_loaded:
+            self.load_plc_ui()
+
+    def deactivate(self):
+        pass
+
+    def load_plc_ui(self):
+        try:
+            here = os.path.dirname(__file__)
+            if here not in sys.path:
+                sys.path.append(here)
+
+            from PLC_GUI import ModernPLCWindow
+        except Exception as e:
+            self.loading_label.setText("❌ PLC GUI not available")
+            QtWidgets.QMessageBox.critical(
+                self, "Import Error", f"Cannot import PLC_GUI:\n{e}"
+            )
+            self.load_button.show()
+            return
+
+        try:
+            plc_obj = ModernPLCWindow()
+        except TypeError:
+            plc_obj = ModernPLCWindow()
+
+        # If it is a QMainWindow, embed its central widget
+        if isinstance(plc_obj, QtWidgets.QMainWindow):
+            central = plc_obj.centralWidget() if callable(plc_obj.centralWidget) else None
+            self._plc_window = plc_obj
+            self._plc_window.hide()
+
+            if central is None:
+                central = QtWidgets.QWidget()
+                self._plc_window.setCentralWidget(central)
+
+            self._embedded = central
+            self._embedded.setParent(self)
+
+            if self._plc_window.styleSheet():
+                self._embedded.setStyleSheet(self._plc_window.styleSheet())
+
+        elif isinstance(plc_obj, QtWidgets.QWidget):
+            self._embedded = plc_obj
+            self._embedded.setParent(self)
+        else:
+            QtWidgets.QMessageBox.critical(
+                self, "Type Error", "Loaded PLC GUI is neither QMainWindow nor QWidget"
+            )
+            return
+
+        # swap loading box with embedded PLC UI
+        host = self.layout()
+        host.removeWidget(self._loading_box)
+        self._loading_box.hide()
+        self._loading_box.setParent(None)
+
+        host.addWidget(self._embedded)
+        self._embedded.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding
+        )
+
+        self.is_loaded = True
 
 # ============================= Main Window =============================
 
@@ -869,6 +985,9 @@ class MainWindow(QMainWindow):
         # ROI button
         if hasattr(self, "btn_roi") and self.btn_roi is not None:
             self.btn_roi.set_compact(compact)
+        # PLC LIVE button
+        if hasattr(self, "btn_plc") and self.btn_plc is not None:
+            self.btn_plc.set_compact(compact)
 
         # header height (logo area)
         if hasattr(self, "header_frame"):
@@ -886,6 +1005,8 @@ class MainWindow(QMainWindow):
             self.measure_label.setVisible(not compact)
         if hasattr(self, "measure_line"):
             self.measure_line.setVisible(not compact)
+        if hasattr(self, "plc_label"):
+            self.plc_label.setVisible( not compact)
 
         if hasattr(self, "logo_label"):
             if compact and getattr(self, "logo_pixmap_compact", None) is not None:
@@ -1037,7 +1158,7 @@ class MainWindow(QMainWindow):
         # --- Navigation buttons ---
         nav = QFrame()
         nv = QVBoxLayout(nav)
-        nv.setContentsMargins(8, 20, 8, 18)
+        nv.setContentsMargins(8, 20, 8, 0)
         nv.setSpacing(6)
         self.nav_layout = nv
 
@@ -1172,6 +1293,28 @@ class MainWindow(QMainWindow):
         nv.addWidget(self.btn_roi)          # <- add this
         self.nav_buttons.append(self.btn_roi)
 
+        # --- PLC UI section (under ROI) ---
+        nv.addSpacing(8)
+
+        self.plc_label = QLabel("PLC UI")
+        self.plc_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.plc_label.setStyleSheet(
+            "color:#94a3b8; font-size:11px; font-weight:800; "
+            "margin:6px 12px 2px 12px; letter-spacing:1px;"
+        )
+        nv.addWidget(self.plc_label)
+
+        plc_icon_path = media_dir / "sidebar_plc.png"
+        self.btn_plc = ToolButton(
+            "  PLC LIVE",
+            icon_path=plc_icon_path if plc_icon_path.is_file() else None,
+            tooltip="PLC UI · Live Monitoring",
+        )
+        self.btn_plc.clicked.connect(lambda _: self.switch_tool(8))   # <-- use your PLC page index
+        nv.addWidget(self.btn_plc)
+        self.nav_buttons.append(self.btn_plc)
+
+
         # map stack index -> corresponding nav button
         self._tool_button_map = {
             0: self.btn_dashboard,
@@ -1182,6 +1325,7 @@ class MainWindow(QMainWindow):
             5: self.nav_buttons[5],   # Augmentation
             6: self.nav_buttons[6],   # Model Training
             7: self.btn_roi,          # ROI
+            8: self.btn_plc,     # PLC LIVE
         }
 
 
@@ -1244,6 +1388,8 @@ class MainWindow(QMainWindow):
         self.page_train.setAutoFillBackground(True)
         self.page_train.setStyleSheet("#TrainingHostPage { background: #0f1419; }")
         self.page_roi     = ROIPlaceholderWidget(self)
+        self.page_plc     = PLCPlaceholderWidget(self)
+
 
         # index mapping:
         # 0 = dashboard, 1 = machines, 2 = projects,
@@ -1258,6 +1404,7 @@ class MainWindow(QMainWindow):
             self.page_aug,
             self.page_train,
             self.page_roi,
+            self.page_plc,
         ):
             self.stack.addWidget(w)
         mv.addWidget(self.stack, 1)
@@ -1396,14 +1543,10 @@ class MainWindow(QMainWindow):
         # create a fresh login window
         login = LoginWindow(on_login_success=after_login)
 
-        # keep a reference so it doesn't get garbage-collected
-        app._login_window = login
-
         login.show()
 
         # close current main window
         self.close()
-
 
     def _restore_window_session(self):
             try:
@@ -1411,10 +1554,6 @@ class MainWindow(QMainWindow):
                 if not geo.isEmpty():
                     # This may try to apply an old (too-small) size
                     self.restoreGeometry(geo)
-
-                    # If restored size ended up smaller than what the layout wants,
-                    # grow it to at least the minimum size. Growing is safe and
-                    # won't trigger the QWindowsWindow::setGeometry warning.
                     minw, minh = self.minimumSize().width(), self.minimumSize().height()
                     curw, curh = self.width(), self.height()
 
@@ -1455,6 +1594,7 @@ class MainWindow(QMainWindow):
             5: "Augmentation Tool",
             6: "Model Training",
             7: "ROI (Measurements)",
+            8: "PLC Live UI",
         }.get(idx, f"Tool {idx}")
 
 
@@ -1509,8 +1649,14 @@ class MainWindow(QMainWindow):
                 self.toast_info("Measurements · ROI")
             self.pathway.show()
 
+        elif index == 8:
+            self.page_plc.activate()
+            if not _from_restore:
+                self.toast_info("PLC Live UI")
+            self.pathway.hide() 
+
         # Update pathway only for pipeline pages (3..7)
-        if index >= 3:
+        if 3 <= index <= 7:
             # map 3..7 -> steps 0..3 (ROI shares last step)
             step = min(max(index - 3, 0), 3)
             self.pathway.set_states(

@@ -6,3 +6,4 @@ build
 detectron2_repo
 EyresAiPlatform.iss
 EyresAiPlatform.spec
+persist.json
