@@ -10,11 +10,6 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from pathlib import Path
 from typing import Optional, Iterable
 from datetime import datetime
-from db import (
-    ensure_mongo_connected,
-    load_camera_overrides,
-    save_camera_overrides,
-)
 
 
 
@@ -27,6 +22,34 @@ def _app_base_dir() -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent
+
+def _projects_root() -> Path:
+    """
+    Root Projects folder next to EXE or in user space (your earlier logic).
+    Example:
+      <exe_dir>/EyresAiPlatform/Projects
+    """
+    base = Path(os.getcwd())  # or AppData approach if you used before
+    root = base / "EyresAiPlatform" / "Projects"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _safe_name(name: str) -> str:
+    name = (name or "Project").strip()
+    name = "".join(ch if ch.isalnum() or ch in " _-" else "_" for ch in name)
+    return name.replace(" ", "_")
+
+
+def get_project_folder(project_name: str) -> Path:
+    """
+    Final folder:
+      EyresAiPlatform/Projects/<ProjectName>
+    """
+    folder = _projects_root() / _safe_name(project_name)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
 
 def _media_dirs() -> list[Path]:
     """
@@ -512,7 +535,7 @@ class CaptureWorker(QtCore.QThread):
             total = self.n_images * len(ser2dev)
             saved, done = [], 0
             ts = time.strftime("%Y%m%d_%H%M%S")
-            root_out = os.path.join(self.base_dir, f"capture_{self.mode}_{ts}")
+            root_out = os.path.join(self.base_dir, f"camera_images_{ts}")
             os.makedirs(root_out, exist_ok=True)
 
             for serial, dev in ser2dev.items():
@@ -611,7 +634,7 @@ class HikCaptureWorker(QtCore.QThread):
             saved_paths: List[str] = []
 
             ts = time.strftime("%Y%m%d_%H%M%S")
-            root_out = os.path.join(self.base_dir, f"capture_mvs_area_{ts}")
+            root_out = os.path.join(self.base_dir, f"camera_images_{ts}")
             os.makedirs(root_out, exist_ok=True)
             self.status.emit(f"Output folder: {root_out}")
 
@@ -1628,12 +1651,26 @@ class StepFolder(QtWidgets.QWidget):
         bx=QtWidgets.QVBoxLayout(box); bx.setContentsMargins(18,18,18,18)
         lbl=QtWidgets.QLabel("Output Directory:"); lbl.setObjectName("formLabel")
         row=QtWidgets.QHBoxLayout(); row.setSpacing(10)
-        self.edit=QtWidgets.QLineEdit(os.path.abspath("captures")); self.edit.setObjectName("pathEdit")
-        btn=QtWidgets.QPushButton("📁 Browse"); btn.setObjectName("secondaryButton"); btn.clicked.connect(self._choose)
-        row.addWidget(self.edit,1); row.addWidget(btn)
+        default_dir = os.path.abspath("captures")  # fallback
+        self.edit = QtWidgets.QLineEdit(default_dir)
+        self.edit.setObjectName("pathEdit")
+
+        # ✅ don't allow manual change (seamless)
+        self.edit.setReadOnly(True)
+
+        # ✅ hide browse button completely
+        btn = QtWidgets.QPushButton("Browse")
+        btn.hide()
+
+        row.addWidget(self.edit, 1)
+        row.addWidget(btn)
         bx.addWidget(lbl); bx.addLayout(row)
         v.addWidget(title); v.addWidget(subtitle); v.addWidget(box); v.addStretch(1)
         self.edit.textChanged.connect(self.changed.emit)
+    def set_project_base(self, project_dir: str):
+        if project_dir:
+            self.edit.setText(project_dir)
+
     def _choose(self):
         d=QtWidgets.QFileDialog.getExistingDirectory(self,"Select Folder",self.edit.text())
         if d: self.edit.setText(d)
@@ -1693,12 +1730,16 @@ class StepPreview(QtWidgets.QWidget):
 
 # ---------- Main ----------
 class CameraWidget(QtWidgets.QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, project_name: str=None, project_root: str=None):
         super().__init__(parent)
+
+        self.project_name = project_name
+        self.project_root = Path(project_root) if project_root else None
         self._toasts = ToastManager.install(self)
 
         # 🔹 Load last saved overrides from MongoDB
         try:
+            from db import load_camera_overrides  # ✅ local import avoids circular init
             arena, mvs = load_camera_overrides()
         except Exception as e:
             print("[cam_app] failed to load overrides from MongoDB:", e)
@@ -1758,6 +1799,17 @@ class CameraWidget(QtWidgets.QWidget):
         self.step_folder      = StepFolder()
         self.step_capture     = StepCapture(self._start_capture, self._stop_capture)
         self.step_preview     = StepPreview()
+        # ---- AUTO set project capture base ----
+        if self.project_root:
+            proj_dir = self.project_root
+        elif self.project_name:
+            proj_dir = get_project_folder(self.project_name)
+        else:
+            proj_dir = Path(os.path.abspath("captures"))
+
+        self._project_dir = proj_dir
+        self.step_folder.set_project_base(str(proj_dir))
+
 
         for w in [
             self.step_mode,
@@ -1818,6 +1870,7 @@ class CameraWidget(QtWidgets.QWidget):
     def _persist_overrides(self):
         """Save current Arena & MVS overrides into MongoDB."""
         try:
+            from db import save_camera_overrides  # ✅ local import
             save_camera_overrides(self._arena_overrides, self._mvs_overrides)
         except Exception as e:
             print("[cam_app] failed to save overrides to MongoDB:", e)
@@ -1855,7 +1908,7 @@ class CameraWidget(QtWidgets.QWidget):
         except Exception: pass
         try: self.step_count.spin.setValue(10)
         except Exception: pass
-        try: self.step_folder.edit.setText(os.path.abspath("captures"))
+        try: self.self.step_folder.edit.setText(str(self._project_dir))
         except Exception: pass
         try: self.step_capture.pbar.setValue(0); self.step_capture.log.clear()
         except Exception: pass
@@ -1922,7 +1975,9 @@ class CameraWidget(QtWidgets.QWidget):
     def _start_capture(self):
         mode=self.step_mode.value()
         n=self.step_count.value()
-        base=self.step_folder.value()
+        base = self.step_folder.value() or str(self._project_dir)
+        os.makedirs(base, exist_ok=True)
+
 
         self._saved_paths=[]
 

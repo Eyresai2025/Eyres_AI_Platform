@@ -83,7 +83,7 @@ class MongoDB:
         self.db.users.create_index("role")
 
         # Projects
-        self.db.projects.create_index("name", unique=True)
+        self.db.projects.create_index("name")   # NOT unique
         self.db.projects.create_index("machine_id")
 
         # Machines
@@ -266,9 +266,13 @@ class ProjectDB:
         """Get all projects from database."""
         return self.model.list_projects()
 
-    def add_project(self, name, machine_id, description="", type=None):
-        """Add a new project."""
-        result = self.model.create_project(name, machine_id, description=description, type=type)
+    def add_project(self, name, machine_id, description="", type=None, folder_path=None):
+        result = self.model.create_project(
+            name, machine_id,
+            description=description,
+            type=type,
+            folder_path=folder_path
+        )
         if result.get("success"):
             return result["project"]
         return None
@@ -281,8 +285,8 @@ class ProjectDB:
         """Get a project by ID."""
         return self.model.get_project(project_id)
 
-    def update_project(self, project_id, name=None, machine_id=None, description=None, type=None):
-        """Update project information."""
+    def update_project(self, project_id, name=None, machine_id=None,
+                   description=None, type=None, folder_path=None):
         data = {}
         if name is not None:
             data["name"] = name
@@ -293,7 +297,11 @@ class ProjectDB:
             data["description"] = description
         if type is not None:
             data["type"] = type
+        if folder_path is not None:
+            data["folder_path"] = folder_path
+
         return self.model.update_project(project_id, data)
+
 
 
 class MachineDB:

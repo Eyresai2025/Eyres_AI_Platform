@@ -5,13 +5,15 @@ from PyQt5.QtWidgets import (
     QLineEdit, QFrame, QScrollArea, QMessageBox, QGridLayout,
     QDialog, QComboBox, QSizePolicy
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from bson.objectid import ObjectId
 from db import ProjectDB, MachineDB
-
+from plc_connection import check_plc_and_get_active
+import threading
+from functools import partial
 
 class MachinePage(QWidget):
-
+    reconnectFinished = pyqtSignal(bool, str)
     def __init__(self, user=None):
         super().__init__()
         self.user = user
@@ -29,6 +31,8 @@ class MachinePage(QWidget):
         """)
 
         self.setup_ui()
+        self.reconnectFinished.connect(self._on_reconnect_result)
+
 
     # ------------------------------------------------------------
     # MAIN PAGE SETUP
@@ -103,6 +107,15 @@ class MachinePage(QWidget):
 
         self.refresh_list()
 
+    def _on_reconnect_result(self, connected: bool, msg: str):
+        """Runs on MAIN thread only."""
+        if connected:
+            QMessageBox.information(self, "PLC Connected ", msg)
+        else:
+            QMessageBox.warning(self, "PLC Not Connected ", msg)
+
+        self.refresh_list()
+
     # ------------------------------------------------------------
     # RENDER MACHINE LIST
     # ------------------------------------------------------------
@@ -164,6 +177,24 @@ class MachinePage(QWidget):
             background-color: #1e40af;
         }
         """
+    
+    def card_reconnect_style(self):
+        return """
+        QPushButton {
+            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                              stop:0 #2563eb, stop:1 #38bdf8);
+            color: #ffffff;
+            border: none;
+            border-radius: 16px;
+            padding: 0 12px;   /* slightly tighter */
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        QPushButton:hover { background-color: #1d4ed8; }
+        QPushButton:pressed { background-color: #1e40af; }
+        """
+
 
     # keep old name if you use it anywhere else
     def button_style(self):
@@ -212,18 +243,6 @@ class MachinePage(QWidget):
         """)
         left_layout.addWidget(name_label)
 
-        # Description (if exists)
-        desc_text = m.get("description", "")
-        if desc_text:
-            desc = QLabel(desc_text)
-            desc.setWordWrap(True)
-            desc.setStyleSheet("""
-                color: #9ca3af;
-                font-size: 13px;
-                padding-bottom: 4px;
-                background-color: transparent;
-            """)
-            left_layout.addWidget(desc)
 
         # PLC Information Section
         plc_container = QWidget()
@@ -312,21 +331,27 @@ class MachinePage(QWidget):
         # -------- Action Buttons --------
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
-
+        btn_reconnect = QPushButton("Reconnect PLC")
         btn_edit = QPushButton("Edit")
         btn_delete = QPushButton("Delete")
 
         # make them pill buttons like "+ Add Machine"
-        for b in (btn_edit, btn_delete):
+        for b in (btn_reconnect, btn_edit, btn_delete):
             b.setFixedHeight(32)
             b.setCursor(Qt.PointingHandCursor)
 
+        # ✅ make reconnect a bit wider than others
+        btn_reconnect.setMinimumWidth(135)   
+        btn_edit.setMinimumWidth(110)
+        btn_delete.setMinimumWidth(110) 
+
+        btn_reconnect.setStyleSheet(self.card_reconnect_style())
         btn_edit.setStyleSheet(self.card_button())
         btn_delete.setStyleSheet(self.card_delete_button())
-
+        btn_reconnect.clicked.connect(partial(self.reconnect_plc, m))
         btn_edit.clicked.connect(lambda: self.open_edit_form(m))
         btn_delete.clicked.connect(lambda: self.delete_machine(m))
-
+        btn_layout.addWidget(btn_reconnect)
         btn_layout.addWidget(btn_edit)
         btn_layout.addWidget(btn_delete)
         right_layout.addLayout(btn_layout)
@@ -419,6 +444,38 @@ class MachinePage(QWidget):
         else:
             self.show_error("Failed to delete machine")
         self.refresh_list()
+    
+    def reconnect_plc(self, machine: dict):
+
+        def _worker():
+            try:
+                plc_brand = machine.get("plc_brand")
+                plc_protocol = machine.get("plc_protocol")
+                ip = machine.get("ip_address")
+                slot = machine.get("slot")
+
+                temp_machine = {
+                    "plc_brand": plc_brand,
+                    "plc_protocol": plc_protocol,
+                    "ip_address": ip,
+                    "slot": slot,
+                }
+
+                connected, msg = check_plc_and_get_active(temp_machine)
+
+                machine_id = str(machine["_id"])
+                self.machine_db.update_machine(machine_id, {"active": bool(connected)})
+
+                # ✅ popup + refresh via signal
+                self.reconnectFinished.emit(bool(connected), str(msg))
+
+            except Exception as e:
+                self.reconnectFinished.emit(False, f"Reconnect failed: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+
+
 
     # ------------------------------------------------------------
     def input_style(self):
@@ -560,12 +617,6 @@ class AddMachineDialog(QDialog):
         self.name_input.setPlaceholderText("Enter machine name")
         layout.addWidget(self.name_input)
 
-        # Description
-        layout.addWidget(QLabel("Description"))
-        self.desc_input = QLineEdit()
-        self.desc_input.setPlaceholderText("Optional description")
-        layout.addWidget(self.desc_input)
-
         # PLC Brand
         layout.addWidget(QLabel("PLC Brand"))
         self.plc_brand_combo = QComboBox()
@@ -589,16 +640,23 @@ class AddMachineDialog(QDialog):
         layout.addWidget(self.plc_protocol_combo)
 
         # IP
-        layout.addWidget(QLabel("IP Address (Optional)"))
+        layout.addWidget(QLabel("IP Address *"))
         self.ip_input = QLineEdit()
         self.ip_input.setPlaceholderText("e.g., 192.168.1.100")
         layout.addWidget(self.ip_input)
 
+        # Slot / Rack (needed for some PLCs like Allen-Bradley)
+        layout.addWidget(QLabel("Slot / Rack (if applicable)"))
+        self.slot_input = QLineEdit()
+        self.slot_input.setPlaceholderText("e.g., 0 or 1 (Allen-Bradley usually 0)")
+        layout.addWidget(self.slot_input)
+
         # Pre-fill when editing
         if self.machine:
             self.name_input.setText(self.machine.get("name", ""))
-            self.desc_input.setText(self.machine.get("description", ""))
             self.ip_input.setText(self.machine.get("ip_address", ""))
+            self.slot_input.setText(str(self.machine.get("slot", "")) if self.machine.get("slot") is not None else "")
+
 
             plc_brand = self.machine.get("plc_brand", "")
             if plc_brand:
@@ -662,10 +720,19 @@ class AddMachineDialog(QDialog):
         self.plc_protocol_combo.setEnabled(True)
 
     def save(self):
+
         name = self.name_input.text().strip()
         if not name:
             QMessageBox.warning(self, "Missing", "Machine name cannot be empty")
             return
+
+        ip_address = self.ip_input.text().strip()
+        if not ip_address:
+            QMessageBox.warning(self, "Missing", "IP Address is mandatory.")
+            return
+
+        slot_raw = self.slot_input.text().strip()
+        slot = int(slot_raw) if slot_raw.isdigit() else None
 
         plc_brand = self.plc_brand_combo.currentText()
         if plc_brand == "Select PLC Brand":
@@ -679,20 +746,42 @@ class AddMachineDialog(QDialog):
         if plc_protocol == "Select Protocol":
             plc_protocol = None
 
-        description = self.desc_input.text().strip() or None
-        ip_address = self.ip_input.text().strip() or None
+        # ---- brand-specific requirement: AB usually needs slot ----
+        if plc_brand and "allen-bradley" in plc_brand.lower() and slot is None:
+            QMessageBox.warning(self, "Missing", "Slot is required for Allen-Bradley PLCs.")
+            return
+
+       # ---- REAL PLC CONNECTION TEST ----
+        temp_machine = {
+            "plc_brand": plc_brand,
+            "plc_protocol": plc_protocol,
+            "ip_address": ip_address,
+            "slot": slot,
+        }
+
+        connected, msg = check_plc_and_get_active(temp_machine)
+
+        if connected:
+            QMessageBox.information(self, "PLC Connected", msg)
+        else:
+            QMessageBox.warning(self, "PLC Not Connected", msg)
+
+
+        active_status = bool(connected)
 
         try:
             if self.machine:
                 machine_id = str(self.machine.get("_id") or self.machine.get("id"))
                 update_data = {
                     "name": name,
-                    "description": description,
                     "ip_address": ip_address,
+                    "slot": slot,
                     "plc_brand": plc_brand,
                     "plc_model": plc_model,
                     "plc_protocol": plc_protocol,
+                    "active": active_status,
                 }
+                # keep None out
                 update_data = {k: v for k, v in update_data.items() if v is not None}
 
                 success = self.machine_db.update_machine(machine_id, update_data)
@@ -705,21 +794,28 @@ class AddMachineDialog(QDialog):
             else:
                 data = {
                     "name": name,
-                    "description": description,
+                    "ip_address": ip_address,
+                    "slot": slot,
                     "plc_brand": plc_brand,
                     "plc_model": plc_model,
                     "plc_protocol": plc_protocol,
-                    "ip_address": ip_address,
+                    "active": active_status,
                 }
                 machine_id = self.machine_db.add_machine(data)
                 if machine_id:
-                    QMessageBox.information(self, "Success", "Machine added successfully.")
+                    QMessageBox.information(
+                        self, "Success",
+                        "Machine added and PLC connected."
+                        if active_status else
+                        "Machine added but PLC not connected (marked Disabled)."
+                    )
                     self.result = {"success": True}
                     self.accept()
                 else:
                     QMessageBox.warning(self, "Error", "Failed to add machine.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error saving machine: {str(e)}")
+
 
     def get_result(self):
         return self.result

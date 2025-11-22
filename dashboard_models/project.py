@@ -3,7 +3,7 @@
 from datetime import datetime
 from bson.objectid import ObjectId
 from db import mongo
-
+from utils.project_paths import get_project_folder
 # IMPORTANT: Model layer should NEVER import ProjectDB or MachineDB from db.py
 # This would create a circular import: db.py → Projects → ProjectDB → db.py
 # Only import: datetime, bson, and db.mongo (the MongoDB singleton)
@@ -22,19 +22,19 @@ class ProjectModel:
     # --------------------------------------------------------
     # Create a new project
     # --------------------------------------------------------
-    def create_project(self, name, machine_id, description="", type=None):
-        if not name:
-            return {"success": False, "error": "Project name required"}
-
+    def create_project(self, name, machine_id, description="", type=None, folder_path=None):
+        if folder_path is None:
+            folder_path = str(get_project_folder(name))
         project = {
             "name": name,
-            "machine_id": ObjectId(machine_id) if machine_id else None,
+            "machine_id": ObjectId(machine_id),
             "description": description,
             "type": type,
-            "cameras": [],  # filled later
+            "folder_path": folder_path,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
         }
+
 
         result = self.collection.insert_one(project)
         project["_id"] = result.inserted_id

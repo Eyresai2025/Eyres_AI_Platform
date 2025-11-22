@@ -6,16 +6,16 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
 )
 from PyQt5.QtCore import Qt
-
+import os, re
+from pathlib import Path
 from db import ProjectDB, MachineDB
-
+from datetime import datetime
 
 class ProjectPage(QWidget):
     """
     Projects manager page:
       - list all projects
       - create / edit / delete
-      - optional jump to camera setup
     """
 
     def __init__(self, parent=None):
@@ -126,7 +126,7 @@ class ProjectPage(QWidget):
         return """
         QPushButton {
             background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                              stop:0 #2563eb, stop:1 #38bdf8);
+                                            stop:0 #2563eb, stop:1 #38bdf8);
             color: #ffffff;
             border: none;
             border-radius: 18px;
@@ -142,6 +142,7 @@ class ProjectPage(QWidget):
             background-color: #1e40af;
         }
         """
+
 
     def card_button(self):
         # SAME pill style as header, just slightly tighter padding
@@ -328,24 +329,20 @@ class ProjectPage(QWidget):
         btn_layout.setSpacing(8)
 
         btn_edit = QPushButton("Edit")
-        btn_camera = QPushButton("Configure Cameras")
         btn_delete = QPushButton("Delete")
 
         # Make them pill-shaped and clickable like header
-        for b in (btn_edit, btn_camera, btn_delete):
+        for b in (btn_edit,btn_delete):
             b.setFixedHeight(32)
             b.setCursor(Qt.PointingHandCursor)
 
         btn_edit.setStyleSheet(self.card_button())
-        btn_camera.setStyleSheet(self.card_button())
         btn_delete.setStyleSheet(self.card_delete_button())
 
         btn_edit.clicked.connect(lambda: self.open_edit_form(p))
-        btn_camera.clicked.connect(lambda: self.open_camera_setup(p))
         btn_delete.clicked.connect(lambda: self.delete_project(p))
 
         btn_layout.addWidget(btn_edit)
-        btn_layout.addWidget(btn_camera)
         btn_layout.addWidget(btn_delete)
 
         right_layout.addLayout(btn_layout)
@@ -356,17 +353,6 @@ class ProjectPage(QWidget):
 
         return card
 
-    # ------------------------------------------------------------
-    # CAMERA SETUP REDIRECT
-    # ------------------------------------------------------------
-    def open_camera_setup(self, project):
-        if not self.main_window:
-            self.show_error(
-                "Camera setup is not wired yet.\n"
-                "You can connect this later via main_window.open_camera_setup()."
-            )
-            return
-        self.main_window.open_camera_setup(project)
 
     # ------------------------------------------------------------
     # ADD / EDIT
@@ -482,21 +468,29 @@ class ProjectPage(QWidget):
                     name=name.text().strip(),
                     machine_id=machine_id_val,
                     description="",
-                    type=type_select.currentText()
+                    type=type_select.currentText(),
                 )
+
                 if result:
-                    self.show_success("Project created")
+                    self.show_success(
+                        f"Project created.\nFolder: {result.get('folder_path','')}"
+                    )
                 else:
                     self.show_error("Failed to create project")
             else:
                 project_id = str(project["_id"])
+                from utils.project_paths import get_project_folder
+                folder_path = str(get_project_folder(name.text().strip()))
+
                 success = self.project_db.update_project(
                     project_id,
                     name=name.text().strip(),
                     machine_id=machine_id_val,
                     description="",
-                    type=type_select.currentText()
+                    type=type_select.currentText(),
+                    folder_path=folder_path
                 )
+
                 if success:
                     self.show_success("Project updated")
                 else:

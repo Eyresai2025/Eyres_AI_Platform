@@ -18,7 +18,9 @@ from app_prefs import AppPrefs
 from login_window import LoginWindow
 from dashboard_page import DashboardPage
 from machine_page import MachinePage       
-from project_page import ProjectPage  
+from project_page import ProjectPage 
+from utils.project_paths import get_project_folder
+
 
 
 
@@ -273,7 +275,24 @@ class CameraPlaceholderWidget(QWidget):
             sys.path.append(os.path.dirname(__file__))
             try:
                 from camera_app import CameraWidget
-                self.camera_widget = CameraWidget(self)
+                # --- get active project info from MainWindow / ProjectPage ---
+                project_name = None
+                project_root = None
+
+                mw = self.window()  # MainWindow
+                if mw is not None and hasattr(mw, "get_active_project_info"):
+                    try:
+                        info = mw.get_active_project_info()
+                        if info:
+                            project_name, project_root = info
+                    except Exception as e:
+                        print("[CameraPlaceholderWidget] active project fetch failed:", e)
+
+                self.camera_widget = CameraWidget(
+                    parent=self,
+                    project_name=project_name,
+                    project_root=project_root,
+                )
             except ImportError as e:
                 self.loading_label.setText("❌ Camera app not available")
                 self.load_button.show()
@@ -288,9 +307,6 @@ class CameraPlaceholderWidget(QWidget):
             self.load_button.hide()
             self.layout().addWidget(self.camera_widget)
             self.is_loaded = True
-
-            if hasattr(self.camera_widget, 'initialize_camera'):
-                self.camera_widget.initialize_camera()
 
         except Exception as e:
             self.loading_label.setText(f"❌ Error loading camera: {str(e)}")
@@ -965,6 +981,22 @@ class MainWindow(QMainWindow):
     def _get_sidebar_width(self) -> int:
         sizes = self.splitter.sizes() if hasattr(self, "splitter") else []
         return sizes[0] if sizes else 0
+    
+    def get_active_project_info(self):
+        try:
+            if hasattr(self.page_projects, "selected_project"):
+                p = self.page_projects.selected_project
+                if p:
+                    folder = p.get("folder_path")
+                    if not folder:
+                        folder = str(get_project_folder(p.get("name")))
+                    return p.get("name"), folder
+        except Exception as e:
+            print("[MainWindow] get_active_project_info error:", e)
+
+        return (None, None)
+
+
 
     def _set_sidebar_width(self, w: int) -> None:
         if not hasattr(self, "splitter"):

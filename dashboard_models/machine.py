@@ -28,13 +28,15 @@ class Machines:
         """
         Payload should be a FLAT dict with:
         {
-            name, description, ip_address,
+            name, ip_address, slot,
             plc_brand, plc_model, plc_protocol, active
         }
+
         """
         try:
             doc = payload.copy()
-            doc.setdefault("active", True)
+            # active comes from UI after real PLC check
+            doc.setdefault("active", False)
             doc.setdefault("created_at", datetime.utcnow())
             doc.setdefault("updated_at", datetime.utcnow())
  
