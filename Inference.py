@@ -4,6 +4,7 @@ import os, sys, json, glob, random, argparse
 import numpy as np
 import cv2
 import argparse
+
 # ---------- Utilities ----------
 # --- safe_safe_print to avoid Windows CP1252 Unicode errors ---
 def safe_print(*parts, **kw):
@@ -156,6 +157,7 @@ class UnifiedYOLOInferencer:
 
         self.conf = conf
         self.iou = iou
+        # may be None → we handle dynamically in predict_image
         self.imgsz = imgsz
         self.agnostic_nms = agnostic_nms
         self.retina_masks = retina_masks
@@ -185,12 +187,28 @@ class UnifiedYOLOInferencer:
         """
         Returns: (detections, results_object)
         detections: list of dicts with keys: cls, name, conf, bbox, mask, keypoints
+
+        Dynamic imgsz logic:
+        - If self.imgsz is None → use current image size [H, W]
+        - Else use provided imgsz (int or [h, w])
         """
+        # --- dynamic imgsz when not provided ---
+        H, W = image_bgr.shape[:2]
+        imgsz = self.imgsz
+        if imgsz is None:
+            # Ultralytics expects int or list; we give [H, W]
+            imgsz = [H, W]
+
         results = self.model.predict(
             source=image_bgr,
-            conf=self.conf, iou=self.iou, imgsz=self.imgsz,
-            half=self.half, agnostic_nms=self.agnostic_nms, retina_masks=self.retina_masks,
-            verbose=False, device=self.device
+            conf=self.conf,
+            iou=self.iou,
+            imgsz=imgsz,
+            half=self.half,
+            agnostic_nms=self.agnostic_nms,
+            retina_masks=self.retina_masks,
+            verbose=False,
+            device=self.device
         )
         if not results:
             return [], None
@@ -511,7 +529,6 @@ def main(argv=None):
             score_thresh=args.score_thresh,
             cfg_file=args.cfg_file
         )
-
 
 
 if __name__ == "__main__":

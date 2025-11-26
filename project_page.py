@@ -365,22 +365,68 @@ class ProjectPage(QWidget):
 
     # ------------------------------------------------------------
     def project_form(self, mode="add", project=None):
+        # nice standalone dialog-style window
         win = QWidget(self, flags=Qt.Window)
+        win.setObjectName("ProjectDialog")
         win.setWindowTitle("Create Project" if mode == "add" else "Edit Project")
-        win.resize(450, 350)
-        win.setStyleSheet("background-color: #111;")
+        win.setAttribute(Qt.WA_DeleteOnClose, True)
+        win.setWindowModality(Qt.ApplicationModal)
+        win.resize(520, 380)
 
-        layout = QVBoxLayout(win)
-        layout.setContentsMargins(25, 25, 25, 25)
+        # ---- dialog background + inner card ----
+        win.setStyleSheet("""
+        QWidget#ProjectDialog {
+            background-color: #020617;
+        }
+        QFrame#ProjectCardForm {
+            background-color: #020617;
+            border-radius: 12px;
+            border: 1px solid #1f2937;
+        }
+        QLabel[role="title"] {
+            color: #f9fafb;
+            font-size: 22px;
+            font-weight: 800;
+        }
+        QLabel[role="subtitle"] {
+            color: #6b7280;
+            font-size: 11px;
+        }
+        """)
+
+        outer = QVBoxLayout(win)
+        outer.setContentsMargins(26, 22, 26, 22)
+        outer.setSpacing(12)
+
+        # ---------- header ----------
+        header = QVBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(4)
 
         title = QLabel("Create Project" if mode == "add" else "Edit Project")
-        title.setStyleSheet("color: white; font-size: 22px; font-weight: bold;")
-        layout.addWidget(title)
+        title.setProperty("role", "title")
 
+        subtitle = QLabel("Define a project, choose its type and link it to a machine.")
+        subtitle.setProperty("role", "subtitle")
+
+        header.addWidget(title)
+        header.addWidget(subtitle)
+        outer.addLayout(header)
+
+        # ---------- card with fields ----------
+        card = QFrame()
+        card.setObjectName("ProjectCardForm")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(22, 18, 22, 18)
+        card_layout.setSpacing(10)
+
+        # project name
         name = QLineEdit()
         name.setPlaceholderText("Project name")
         name.setStyleSheet(self.input_style())
+        card_layout.addWidget(name)
 
+        # project type
         type_select = QComboBox()
         type_select.addItems([
             "Anomaly",
@@ -390,35 +436,47 @@ class ProjectPage(QWidget):
         ])
         type_select.setStyleSheet("""
             QComboBox {
-                background-color: #1a1a1a;
-                border: 1px solid #333;
-                border-radius: 6px;
-                padding: 10px;
-                color: white;
+                background-color: #020617;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                padding: 8px 10px;
+                color: #e5e7eb;
+                font-size: 12px;
+            }
+            QComboBox:focus {
+                border: 1px solid #2563eb;
             }
             QComboBox QAbstractItemView {
-                background-color: #1a1a1a;
-                color: white;
-                selection-background-color: #1B5FCC;
+                background-color: #020617;
+                color: #f9fafb;
+                selection-background-color: #1d4ed8;
+                border: 1px solid #1f2937;
             }
         """)
+        card_layout.addWidget(type_select)
 
+        # machine select
         machine_select = QComboBox()
         machine_select.setStyleSheet("""
             QComboBox {
-                background-color: #1a1a1a;
-                border: 1px solid #333;
-                border-radius: 6px;
-                padding: 10px;
-                color: white;
+                background-color: #020617;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                padding: 8px 10px;
+                color: #e5e7eb;
+                font-size: 12px;
+            }
+            QComboBox:focus {
+                border: 1px solid #2563eb;
             }
             QComboBox QAbstractItemView {
-                background-color: #1a1a1a;
-                color: white;
-                selection-background-color: #1B5FCC;
+                background-color: #020617;
+                color: #f9fafb;
+                selection-background-color: #1d4ed8;
+                border: 1px solid #1f2937;
             }
         """)
-
+        # fill machines
         machines = self.machine_db.get_all_machines()
         for m in machines:
             raw_name = m.get("name", "")
@@ -433,28 +491,43 @@ class ProjectPage(QWidget):
             machine_id = str(m.get("_id") or m.get("id"))
             machine_select.addItem(machine_name, machine_id)
 
-        if mode == "edit":
-            name.setText(project["name"])
+        card_layout.addWidget(machine_select)
+
+        card_layout.addStretch(1)
+        outer.addWidget(card)
+
+        # ---------- footer with Save button ----------
+        footer = QHBoxLayout()
+        footer.setContentsMargins(0, 6, 0, 0)
+
+        footer.addStretch(1)
+        save_btn = QPushButton("Save")
+        save_btn.setFixedHeight(34)
+        save_btn.setMinimumWidth(160)
+        save_btn.setCursor(Qt.PointingHandCursor)
+        save_btn.setStyleSheet(self.header_button_style())
+        footer.addWidget(save_btn)
+        outer.addLayout(footer)
+
+        # ---------- populate fields when editing ----------
+        if mode == "edit" and project is not None:
+            name.setText(project.get("name", ""))
+
             machine_id = str(project.get("machine_id", ""))
-            machine_index = machine_select.findData(machine_id)
-            if machine_index >= 0:
-                machine_select.setCurrentIndex(machine_index)
+            idx = machine_select.findData(machine_id)
+            if idx >= 0:
+                machine_select.setCurrentIndex(idx)
+
             proj_type = project.get("type")
             if proj_type:
-                index = type_select.findText(proj_type)
-                if index >= 0:
-                    type_select.setCurrentIndex(index)
+                t_idx = type_select.findText(proj_type)
+                if t_idx >= 0:
+                    type_select.setCurrentIndex(t_idx)
 
-        layout.addWidget(name)
-        layout.addWidget(type_select)
-        layout.addWidget(machine_select)
-
-        save_btn = QPushButton("Save")
-        save_btn.setStyleSheet(self.header_button_style())
-        layout.addWidget(save_btn)
-
+        # ---------- save logic ----------
         def save_action():
-            if not name.text().strip():
+            proj_name = name.text().strip()
+            if not proj_name:
                 self.show_error("Project name is required")
                 return
 
@@ -465,32 +538,30 @@ class ProjectPage(QWidget):
 
             if mode == "add":
                 result = self.project_db.add_project(
-                    name=name.text().strip(),
+                    name=proj_name,
                     machine_id=machine_id_val,
                     description="",
                     type=type_select.currentText(),
                 )
-
                 if result:
                     self.show_success(
-                        f"Project created.\nFolder: {result.get('folder_path','')}"
+                        f"Project created.\nFolder: {result.get('folder_path', '')}"
                     )
                 else:
                     self.show_error("Failed to create project")
             else:
                 project_id = str(project["_id"])
                 from utils.project_paths import get_project_folder
-                folder_path = str(get_project_folder(name.text().strip()))
+                folder_path = str(get_project_folder(proj_name))
 
                 success = self.project_db.update_project(
                     project_id,
-                    name=name.text().strip(),
+                    name=proj_name,
                     machine_id=machine_id_val,
                     description="",
                     type=type_select.currentText(),
-                    folder_path=folder_path
+                    folder_path=folder_path,
                 )
-
                 if success:
                     self.show_success("Project updated")
                 else:
@@ -500,7 +571,17 @@ class ProjectPage(QWidget):
             self.refresh_list()
 
         save_btn.clicked.connect(save_action)
+
+        # Center dialog roughly over main window
+        parent_window = self.window()
+        if parent_window is not None:
+            geo = parent_window.geometry()
+            x = geo.x() + (geo.width() - win.width()) // 2
+            y = geo.y() + (geo.height() - win.height()) // 2
+            win.move(max(0, x), max(0, y))
+
         win.show()
+
 
     # ------------------------------------------------------------
     def delete_project(self, project):

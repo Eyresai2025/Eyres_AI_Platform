@@ -1755,7 +1755,7 @@ class StepTrain(QtWidgets.QWidget):
 # ================================== Main Window =============================================
 class TrainingWindow(QtWidgets.QMainWindow):
 
-    def __init__(self):
+    def __init__(self,parent=None):
         super().__init__()
         self.setWindowTitle("Training Wizard")
         self.resize(1180, 760)

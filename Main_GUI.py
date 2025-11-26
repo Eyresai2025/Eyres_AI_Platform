@@ -3,14 +3,11 @@ import sys, os, importlib
 from pathlib import Path
 
 from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import Qt, QEvent, QTimer, QEasingCurve, QRect, QPoint
-from PyQt5.QtGui import QPalette, QColor, QPixmap, QPainter, QPen, QFont, QFontMetrics
+from PyQt5.QtCore import Qt, QEvent, QTimer, QEasingCurve, QRect, QPoint, QSize
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QStackedWidget, QFrame, QMessageBox, QSizePolicy, QSplitter
 )
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import Qt, QEvent, QTimer, QEasingCurve, QRect, QPoint, QSize
 from PyQt5.QtGui import QPalette, QColor, QPixmap, QPainter, QPen, QFont, QFontMetrics, QIcon
 
 from toasts import ToastManager
@@ -20,8 +17,6 @@ from dashboard_page import DashboardPage
 from machine_page import MachinePage       
 from project_page import ProjectPage 
 from utils.project_paths import get_project_folder
-
-
 
 
 # ============================= Helpers =============================
@@ -77,6 +72,24 @@ def _find_icon(filename: str) -> Path | None:
     media = _app_base_dir() / "Media"
     p = media / filename
     return p if p.is_file() else None
+
+def _get_app_icon() -> QIcon | None:
+    """
+    Return the app icon from Media/app.ico (or the first .ico we find),
+    or None if nothing exists.
+    """
+    # Try explicit app.ico
+    icon_path = _app_base_dir() / "Media" / "app.ico"
+    if icon_path.is_file():
+        return QIcon(str(icon_path))
+
+    # Fallback to whatever _find_logo_ico() finds
+    ico = _find_logo_ico()
+    if ico is not None:
+        return QIcon(str(ico))
+
+    return None
+
 
 
 
@@ -630,18 +643,37 @@ class TrainingPlaceholderWidget(QtWidgets.QWidget):
 class AspectLogoLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._orig = QPixmap()
+        self._orig_full = QPixmap()
+        self._orig_compact = QPixmap()
+        self._current_mode = "full"  # 'full' or 'compact'
         self._last_size = QSize()
         self.setAlignment(Qt.AlignCenter)
 
-    def setPixmap(self, pm: QPixmap):
-        self._orig = pm
-        self._last_size = QSize()   # force re-scale on next resize
-        super().setPixmap(pm)
+    def setPixmaps(self, full_pm: QPixmap, compact_pm: QPixmap = None):
+        self._orig_full = full_pm
+        self._orig_compact = compact_pm if compact_pm else full_pm
+        self._current_mode = "full"
+        self._last_size = QSize()
+        super().setPixmap(full_pm)
+
+    def set_mode(self, mode: str):
+        """Set display mode: 'full' or 'compact'"""
+        if self._current_mode == mode:
+            return
+        self._current_mode = mode
+        self._last_size = QSize()  # Force rescale
+        self._update_pixmap()
+
+    def _update_pixmap(self):
+        if self._current_mode == "full" and not self._orig_full.isNull():
+            super().setPixmap(self._orig_full)
+        elif self._current_mode == "compact" and not self._orig_compact.isNull():
+            super().setPixmap(self._orig_compact)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if self._orig.isNull():
+        if (self._current_mode == "full" and self._orig_full.isNull()) or \
+           (self._current_mode == "compact" and self._orig_compact.isNull()):
             return
 
         # avoid re-scaling on every tiny animation step
@@ -649,8 +681,9 @@ class AspectLogoLabel(QLabel):
             return
         self._last_size = self.size()
 
-        scaled = self._orig.scaled(
-            self.size(),             # use available space
+        source = self._orig_full if self._current_mode == "full" else self._orig_compact
+        scaled = source.scaled(
+            self.size(),
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation
         )
@@ -1014,9 +1047,11 @@ class MainWindow(QMainWindow):
         # nav buttons
         for b in getattr(self, "nav_buttons", []):
             b.set_compact(compact)
+        
         # ROI button
         if hasattr(self, "btn_roi") and self.btn_roi is not None:
             self.btn_roi.set_compact(compact)
+        
         # PLC LIVE button
         if hasattr(self, "btn_plc") and self.btn_plc is not None:
             self.btn_plc.set_compact(compact)
@@ -1038,32 +1073,43 @@ class MainWindow(QMainWindow):
         if hasattr(self, "measure_line"):
             self.measure_line.setVisible(not compact)
         if hasattr(self, "plc_label"):
-            self.plc_label.setVisible( not compact)
+            self.plc_label.setVisible(not compact)
 
+        # Smooth logo transition with a small delay
         if hasattr(self, "logo_label"):
-            if compact and getattr(self, "logo_pixmap_compact", None) is not None:
-                self.logo_label.setPixmap(self.logo_pixmap_compact)
-            elif (not compact) and getattr(self, "logo_pixmap_full", None) is not None:
-                self.logo_label.setPixmap(self.logo_pixmap_full)
+            QtCore.QTimer.singleShot(50, lambda: self._update_logo_for_state(compact))
 
-        # --- NEW: compact behavior for Logout button ---
+        # Logout button text
         if hasattr(self, "btn_logout"):
             if compact:
                 self.btn_logout.setText("")        
             else:
-                self.btn_logout.setText("  Logout") # text when expanded
+                self.btn_logout.setText("  Logout")
+
+    def _update_logo_for_state(self, compact: bool):
+        """Update logo with smooth transition"""
+        if hasattr(self, "logo_label") and hasattr(self.logo_label, "set_mode"):
+            self.logo_label.set_mode("compact" if compact else "full")
+            
+        if compact and getattr(self, "logo_pixmap_compact", None) is not None:
+            self.logo_label.setPixmap(self.logo_pixmap_compact)
+        elif (not compact) and getattr(self, "logo_pixmap_full", None) is not None:
+            self.logo_label.setPixmap(self.logo_pixmap_full)
 
 
     def __init__(self, user=None):
         super().__init__()
+        app_icon = _get_app_icon()
+        if app_icon is not None:
+            self.setWindowIcon(app_icon)
         self.current_user = user or {}
         self.prefs = AppPrefs()
         self.setWindowTitle("AI Model Training Suite")
         self.setMinimumSize(1100, 700)  # or any size you like
         self.setGeometry(80, 80, 1200, 800)
         self._collapsed_width = 56
-        self._anim_ms = 160
-        self._auto_collapse_ms = 280
+        self._anim_ms = 300
+        self._auto_collapse_ms = 500
         self._live_window = None 
         self._build()
         self._restore_window_session()
@@ -1074,10 +1120,18 @@ class MainWindow(QMainWindow):
             pass
 
     def _restore_sidebar(self):
-        try: w = max(160, self.prefs.get_sidebar_width(220))
-        except Exception: w = 260
-        self.splitter.setSizes([w, max(600, self.width() - w)])
+        try: 
+            w = max(220, self.prefs.get_sidebar_width(220))  
+        except Exception: 
+            w = 260
+        
+        # Set sidebar to expanded width
+        total_width = max(1200, self.width())  
+        self.splitter.setSizes([w, total_width - w])
         self._expanded_width = w
+        
+        # Explicitly set expanded state
+        self._set_sidebar_compact(False)
 
     def _on_splitter_moved(self, pos: int, index: int):
         try:
@@ -1106,13 +1160,19 @@ class MainWindow(QMainWindow):
         self._set_sidebar_compact(False)
 
     def _collapse_sidebar(self):
-        self._animate_to(self._collapsed_width)
-        self._set_sidebar_compact(True) 
+        # Only collapse if sidebar is currently expanded
+        if self._get_sidebar_width() > self._collapsed_width + 20:
+            self._animate_to(self._collapsed_width)
+            self._set_sidebar_compact(True)
 
     def eventFilter(self, obj, ev):
         if obj is self.side:
-            if ev.type() == QEvent.Enter: self._expand_sidebar()
-            elif ev.type() == QEvent.Leave: self._hover_timer.start(self._auto_collapse_ms)
+            if ev.type() == QEvent.Enter: 
+                self._expand_sidebar()
+            elif ev.type() == QEvent.Leave: 
+                # Only start collapse timer if sidebar is currently expanded
+                if self._get_sidebar_width() > self._collapsed_width + 20:
+                    self._hover_timer.start(self._auto_collapse_ms)
         return super().eventFilter(obj, ev)
 
     def _build(self):
@@ -1154,34 +1214,34 @@ class MainWindow(QMainWindow):
         hv.setContentsMargins(12, 8, 12, 8)
         hv.setSpacing(0)
 
+        # In your _build method, replace the logo section with:
         logo_label = AspectLogoLabel()
         logo_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         logo_file_png = _find_logo()
         logo_file_ico = _find_logo_ico()
 
-        self.logo_pixmap_full = None     
-        self.logo_pixmap_compact = None  
+        full_pm = QPixmap()
+        compact_pm = QPixmap()
+
         if logo_file_png is not None:
-            pm_full = QPixmap(str(logo_file_png))
-            if not pm_full.isNull():
-                self.logo_pixmap_full = pm_full
-
+            full_pm = QPixmap(str(logo_file_png))
+            
         if logo_file_ico is not None:
-            pm_ico = QPixmap(str(logo_file_ico))
-            if not pm_ico.isNull():
-                self.logo_pixmap_compact = pm_ico
+            compact_pm = QPixmap(str(logo_file_ico))
+        else:
+            # Fallback: create compact version from full logo
+            if not full_pm.isNull():
+                compact_pm = full_pm.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-        # initial state = expanded → show full PNG if we have it,
-        # otherwise fall back to ICO, otherwise just a colored box
-        if self.logo_pixmap_full is not None:
-            logo_label.setPixmap(self.logo_pixmap_full)
-        elif self.logo_pixmap_compact is not None:
-            logo_label.setPixmap(self.logo_pixmap_compact)
+        if not full_pm.isNull():
+            logo_label.setPixmaps(full_pm, compact_pm)
         else:
             logo_label.setStyleSheet("background:#2b2f33; border-radius:8px;")
 
         hv.addWidget(logo_label)
         sv.addWidget(header)
+        self.logo_label = logo_label
 
         # keep refs for collapse/expand behaviour
         self.header_frame = header
@@ -1446,8 +1506,13 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.main_frame)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
+            
+        # RESTORE SIDEBAR WITH EXPANDED STATE
         self._restore_sidebar()
-        self._set_sidebar_compact(self._get_sidebar_width() <= self._collapsed_width + 4)
+            
+        # FORCE EXPANDED MODE ON STARTUP
+        self._set_sidebar_compact(False)
+            
         # Toasts
         self.toast_mgr = ToastManager.install(self)
         self.toast_info    = lambda msg, ms=2500: self.toast_mgr.show(msg, "info",    ms)
@@ -1511,27 +1576,17 @@ class MainWindow(QMainWindow):
     def _on_live_clicked(self):
         """
         Open the Live pipeline window (from live.py).
-        Adjust import / class name here if needed.
+
+        - If user says cameras are connected -> camera live mode
+        - If user says NO -> local folder inference mode
         """
-
-        # ---- NEW: first ask if cameras are connected ----
-        if not self._confirm_cameras_connected():
-            # Optional: show a toast if user picked No
-            if hasattr(self, "toast_info"):
-                try:
-                    self.toast_info("Connect cameras and try again.", 2000)
-                except Exception:
-                    pass
-            return
-        # -------------------------------------------------
-
         try:
             # ensure current folder is on sys.path
             here = os.path.dirname(__file__)
             if here not in sys.path:
                 sys.path.append(here)
 
-            from live import MainWindow as LiveWindow  # <-- change if your class name differs
+            from live import MainWindow as LiveWindow
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -1540,7 +1595,6 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # keep one instance alive
         if self._live_window is None:
             try:
                 self._live_window = LiveWindow()
@@ -1553,15 +1607,55 @@ class MainWindow(QMainWindow):
                 self._live_window = None
                 return
 
+        # Set window properties BEFORE showing
+        self._live_window.setMinimumSize(1366, 768)
+        self._live_window.resize(1300, 700)
+        
+        # Show and activate the window FIRST
+        self._live_window.showMaximized()
+        self._live_window.raise_()
+        self._live_window.activateWindow()
+        
+        # Force the window to stay on top during configuration
+        self._live_window.setWindowFlags(self._live_window.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+        self._live_window.show()
+
+        # Small delay to ensure window is fully visible
+        QtCore.QTimer.singleShot(100, self._start_live_config)
+
+    def _start_live_config(self):
+        """Start the configuration after the window is fully visible"""
+        if not hasattr(self, '_live_window') or self._live_window is None:
+            return
+            
+        # ---- NEW: ask which mode to use ----
+        reply = QMessageBox.question(
+            self._live_window,
+            "Start Live",
+            "Are Hikrobot cameras connected?\n\n"
+            "Yes  → use cameras\n"
+            "No   → run on local image folder",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+
+        if reply == QMessageBox.Yes:
+            # camera mode (this will itself fall back to folder-mode
+            # if no devices are actually found)
+            self._live_window._start_live_flow()
+        else:
+            # offline folder mode
+            self._live_window._start_folder_mode()
+
+        # Remove the always-on-top flag after configuration
+        self._live_window.setWindowFlags(self._live_window.windowFlags() & ~QtCore.Qt.WindowStaysOnTopHint)
+        self._live_window.show()
+
+        # optional toast
         if hasattr(self, "toast_info"):
             try:
                 self.toast_info("Opening Live pipeline…", 1800)
             except Exception:
                 pass
-
-        self._live_window.show()
-        self._live_window.raise_()
-        self._live_window.activateWindow()
 
     
     def _on_logout_clicked(self):
