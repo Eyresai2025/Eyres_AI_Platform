@@ -8,7 +8,7 @@ from typing import List
 import hik_capture  
 from pathlib import Path
 from collections import deque
-from db import ensure_mongo_connected, load_camera_overrides
+from db import ensure_mongo_connected, load_camera_overrides, insert_live_record
 # at the very top of live.py
 import os
 print("[live] loaded from:", os.path.abspath(__file__))
@@ -50,6 +50,19 @@ def _find_logo() -> Path | None:
         if files:
             return files[0]
     return None
+def _find_camera_image() -> Path | None:
+    """
+    Look for camera_image.* inside Media folder.
+    """
+    media = _app_base_dir() / "Media"
+    if not media.exists():
+        return None
+
+    for ext in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"):
+        p = media / f"camera_image{ext}"
+        if p.is_file():
+            return p
+    return None
 
 DEFAULT_RUNS_DIR = r"C:\Users\DELL\Desktop\inf"
 INFERENCE_SCRIPT = str((Path(__file__).resolve().parent / "Inference.py").as_posix())
@@ -85,6 +98,45 @@ QMainWindow {
 #GridHost {
   background-color: #020617;
 }
+/* Previous inspection blank page */
+#PrevPage {
+  background-color: #020617;
+}
+#PrevPlaceholder {
+  background-color: #000000;
+  border-radius: 18px;
+  border: 1px solid #111827;
+}
+
+/* ===== TOP HEADER STRIP (Live / Previous) ===== */
+#HeaderBar {
+  background-color: #020617;
+  border-bottom: 1px solid #111827;
+}
+
+/* Text-like tabs inside header (no button box) */
+#TabButton {
+  border: none;
+  background: transparent;
+  padding: 4px 0;
+  margin-right: 24px;        /* spacing between the two labels */
+  color: #64748b;            /* muted slate */
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Active tab: highlight + underline/bar */
+#TabButton[active="true"] {
+  color: #e5e7eb;
+  border-bottom: 2px solid #22c55e;
+}
+
+/* Hover state (only color change, still flat) */
+#TabButton:hover {
+  color: #e5e7eb;
+}
+
+
 
 /* ===== INSPECTION SUMMARY LABEL ===== */
 #SummaryHeader {
@@ -408,7 +460,8 @@ class CardWidget(QtWidgets.QFrame):
         self.setProperty("good", False)
         self.setProperty("ng", False)
         self.setMinimumWidth(260)
-
+        self.setMaximumWidth(1100)   # tweak if you want a bit more/less
+        self.setMaximumHeight(620) 
         if PYQT6:
             self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         else:
@@ -448,10 +501,23 @@ class CardWidget(QtWidgets.QFrame):
         self.status.setProperty("ng", False)
 
         # Image box
-        self.image = QtWidgets.QLabel("📸 Placeholder")
+        self.image = QtWidgets.QLabel()
         self.image.setObjectName("ImageBox")
         self.image.setAlignment(AlignCenter)
-        self.image.setMinimumHeight(200)
+        self.image.setMinimumHeight(190)
+
+        # Try to load camera_image.* from Media as initial placeholder
+        cam_img_path = _find_camera_image()
+        if cam_img_path is not None:
+            pm = QtGui.QPixmap(str(cam_img_path))
+            if not pm.isNull():
+                # scale nicely inside the box
+                pm = pm.scaled(300, 120, KeepAspect, Smooth)
+                self.image.setPixmap(pm)
+        else:
+            # fallback text if no file found
+            self.image.setText("Placeholder")
+
 
         # Bottom row
         bottom = QtWidgets.QHBoxLayout()
@@ -507,26 +573,24 @@ class CardWidget(QtWidgets.QFrame):
         self.status.setProperty("na", False)
         self.status.style().unpolish(self.status); self.status.style().polish(self.status)
         self.ng_count += 1
-        self.right.setText(f"❌ {self.ng_count}")
+        self.right.setText(f" {self.ng_count}")
         shadow = self.graphicsEffect()
         if shadow: shadow.setColor(QtGui.QColor(239, 68, 68, 100))
 
     def clear(self):
         self._pixmap = None
-        self.image.setText("📸 Placeholder")
-        self.image.setPixmap(QtGui.QPixmap())
-        self.ng_count = 0
-        self.right.setText("❌ 0")
-        self.setProperty("good", False)
-        self.setProperty("ng", False)
-        self.style().unpolish(self); self.style().polish(self)
-        self.status.setText("N/A")
-        self.status.setProperty("ok", False)
-        self.status.setProperty("ng", False)
-        self.status.setProperty("na", True)
-        self.status.style().unpolish(self.status); self.status.style().polish(self.status)
-        shadow = self.graphicsEffect()
-        if shadow: shadow.setColor(QtGui.QColor(139, 92, 246, 60))
+
+        cam_img_path = _find_camera_image()
+        if cam_img_path is not None:
+            pm = QtGui.QPixmap(str(cam_img_path))
+            if not pm.isNull():
+                pm = pm.scaled(400, 220, KeepAspect, Smooth)
+                self.image.setPixmap(pm)
+                self.image.setText("")
+        else:
+            self.image.setText("Placeholder")
+            self.image.setPixmap(QtGui.QPixmap())
+
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -854,6 +918,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._inflight = False    # True when one inference is running
         self._infer_pool = ThreadPoolExecutor(max_workers=2)
         self.infer_result.connect(self._apply_infer_result)
+        self._current_input: dict[int, str] = {}
 
         # ---- root containers ----
         central = QtWidgets.QWidget()
@@ -1043,17 +1108,99 @@ class MainWindow(QtWidgets.QMainWindow):
         # add centered at bottom of sidebar
         side.addWidget(self.bigStatus, 0, AlignCenter)
 
-        # ---- grid host (camera cards) ----
+        # ---- grid host = header bar (top) + camera grid (below) ----
         self.gridHost = QtWidgets.QWidget()
         self.gridHost.setObjectName("GridHost")
-        self.grid = QtWidgets.QGridLayout(self.gridHost)
+
+        # vertical layout on the right side
+        self.gridHostLayout = QtWidgets.QVBoxLayout(self.gridHost)
+        # top margin small so header hugs the top (under title bar)
+        self.gridHostLayout.setContentsMargins(16, 4, 16, 16)
+        self.gridHostLayout.setSpacing(8)
+
+        # ===== HEADER BAR (where you marked red) =====
+        headerFrame = QtWidgets.QFrame()
+        headerFrame.setObjectName("HeaderBar")
+        headerLayout = QtWidgets.QHBoxLayout(headerFrame)
+        headerLayout.setContentsMargins(0, 4, 0, 4)
+        headerLayout.setSpacing(8)
+
+        # the two options
+        self.btnLiveTab = QtWidgets.QPushButton("Live Inspection")
+        self.btnLiveTab.setObjectName("TabButton")
+        self.btnLiveTab.setProperty("active", True)
+        self.btnLiveTab.setFlat(True)
+
+        self.btnPrevTab = QtWidgets.QPushButton("Previous Inspection")
+        self.btnPrevTab.setObjectName("TabButton")
+        self.btnPrevTab.setProperty("active", False)
+        self.btnPrevTab.setFlat(True)
+
+        # place them near the left; add stretch on the right
+        headerLayout.addWidget(self.btnLiveTab)
+        headerLayout.addWidget(self.btnPrevTab)
+        headerLayout.addStretch(1)
+
+        self.gridHostLayout.addWidget(headerFrame)
+
+        # Live page widget that will hold the camera card grid
+        self.livePage = QtWidgets.QWidget()
+        self.grid = QtWidgets.QGridLayout(self.livePage)
         self.grid.setHorizontalSpacing(16)
         self.grid.setVerticalSpacing(16)
-        self.grid.setContentsMargins(16, 16, 16, 16)
-    
-        # add sidebar + grid to root layout
+        self.grid.setContentsMargins(0, 8, 0, 0)
+
+        # Previous page: simple black panel (no cards for now)
+        self.prevPage = QtWidgets.QFrame()
+        self.prevPage.setObjectName("PrevPage")
+        prevLayout = QtWidgets.QVBoxLayout(self.prevPage)
+        prevLayout.setContentsMargins(0, 8, 0, 0)
+        prevLayout.setSpacing(0)
+
+        self.prevBlack = QtWidgets.QLabel()
+        self.prevBlack.setObjectName("PrevPlaceholder")
+        self.prevBlack.setMinimumHeight(300)
+        self.prevBlack.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding
+        )
+        self.prevBlack.setAlignment(AlignCenter)
+        self.prevBlack.setText("")   # no text, just a black panel
+        prevLayout.addWidget(self.prevBlack)
+
+        # Stack the two pages and put the stack under the header
+        self.stack = QtWidgets.QStackedLayout()
+        self.stack.addWidget(self.livePage)   # index 0
+        self.stack.addWidget(self.prevPage)   # index 1
+        self.gridHostLayout.addLayout(self.stack, 1)
+        self.stack.setCurrentWidget(self.livePage) # stretch=1 -> takes rest
+
+        # add sidebar + right side to root layout
         root.addWidget(self.sidebar)
         root.addWidget(self.gridHost, 1)
+
+        # simple toggle for active style + page switch
+        def _set_tab_mode(mode: str):
+            live_active = (mode == "live")
+
+            # header highlight
+            self.btnLiveTab.setProperty("active", live_active)
+            self.btnPrevTab.setProperty("active", not live_active)
+            for btn in (self.btnLiveTab, self.btnPrevTab):
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+
+            # switch stacked page
+            if live_active:
+                self.stack.setCurrentWidget(self.livePage)
+            else:
+                self.stack.setCurrentWidget(self.prevPage)
+
+        self.btnLiveTab.clicked.connect(lambda: _set_tab_mode("live"))
+        self.btnPrevTab.clicked.connect(lambda: _set_tab_mode("previous"))
+
+
+
 
         self.cards: list[CardWidget] = []
         self.apply_theme()
@@ -1062,6 +1209,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(1000)
+        self._build_cards(1)                                        
+        self.has_results = False                                     
+        self._refresh_summary()  
 
     def apply_theme(self):
         # Apply live UI theme
@@ -1357,6 +1507,7 @@ class MainWindow(QtWidgets.QMainWindow):
         
     @QtCore.pyqtSlot(int, str, bool, str)
     def _apply_infer_result(self, cam_index: int, overlay_path: str, is_ng: bool, score_text: str):
+        # ---------- UI update ----------
         card_idx = self._dev_map.get(cam_index, 0) if hasattr(self, "_dev_map") else cam_index
         card_idx = max(0, min(card_idx, len(self.cards) - 1))
         card = self.cards[card_idx] if self.cards else None
@@ -1364,20 +1515,90 @@ class MainWindow(QtWidgets.QMainWindow):
             # show overlay image (final)
             card.set_image(overlay_path)
             if is_ng:
-                card.set_ng(); self.bad += 1
+                card.set_ng()
+                self.bad += 1
             else:
-                card.set_good(); self.good += 1
+                card.set_good()
+                self.good += 1
             try:
                 card.score.setText(f"📊 Score: {score_text}")
             except Exception:
                 pass
+
         self._last_is_ng = bool(is_ng)
         self.has_results = True
         self._refresh_summary()
 
-        # mark this inference complete and trigger the next one
+        # ---------- DB logging (live collection) ----------
+        try:
+            input_path = self._current_input.get(cam_index)
+
+            # safely read full image bytes
+            input_bytes = None
+            output_bytes = None
+
+            if input_path and os.path.isfile(input_path):
+                with open(input_path, "rb") as f:
+                    input_bytes = f.read()
+
+            if overlay_path and os.path.isfile(overlay_path):
+                with open(overlay_path, "rb") as f:
+                    output_bytes = f.read()
+
+            total = self.good + self.bad
+
+            # parse classname + numeric score from score_text
+            cls_name = None
+            per_score = None
+            if score_text:
+                st = score_text.strip()
+                if st.upper() == "GOOD":
+                    cls_name = "GOOD"
+                    per_score = 1.0
+                else:
+                    parts = st.split()
+                    if parts:
+                        cls_name = parts[0]
+                    if len(parts) >= 2:
+                        try:
+                            per_score = float(parts[1])
+                        except ValueError:
+                            per_score = None
+
+            doc = {
+                "cam_index": cam_index,
+                "good_count": self.good,
+                "bad_count": self.bad,
+                "total_count": total,
+                "cycle": self.cycle_count,
+                "inspection_type": (self._infer_cfg.get("backend") or "").upper(),
+                "per_image_score": per_score,
+                "score_text": score_text,
+                "class_name": cls_name,
+
+                # 🔴 here we store the full images, not just paths
+                "input_image": input_bytes,   # raw bytes of input image
+                "output_image": output_bytes, # raw bytes of overlay image
+
+                # helpful meta about filenames (optional but useful)
+                "input_filename": os.path.basename(input_path) if input_path else None,
+                "output_filename": os.path.basename(overlay_path) if overlay_path else None,
+                # inspection_datetime will be auto-filled in insert_live_record
+            }
+            insert_live_record(doc)
+        except Exception as e:
+            print(f"[live] failed to insert live record: {e}")
+
+        # clean up input mapping for this cam (optional)
+        try:
+            self._current_input.pop(cam_index, None)
+        except Exception:
+            pass
+
+        # ---------- trigger next inference ----------
         self._inflight = False
         QtCore.QTimer.singleShot(0, self._kick_next_inference)
+
 
         
     def _prompt_infer_options(self) -> bool:
@@ -1848,7 +2069,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         cam_index, img_path = self._pending.popleft()
-
+        self._current_input[cam_index] = img_path
         # safety: inference config must be present
         if not self._infer_cfg.get("backend") or not self._infer_cfg.get("weights"):
             QtWidgets.QMessageBox.critical(self, "Inference Not Configured",

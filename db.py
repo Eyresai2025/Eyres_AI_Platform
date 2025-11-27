@@ -17,8 +17,6 @@ from datetime import datetime
 # ----------------------------------------------------------------------
 # MongoDB singleton
 # ----------------------------------------------------------------------
-
-
 class MongoDB:
     """
     Industrial-grade MongoDB singleton.
@@ -67,13 +65,13 @@ class MongoDB:
             "machines",
             "system_logs",
             "camera_overrides",  # added for camera settings
+            "live",
         ]
 
         existing = set(self.db.list_collection_names())
         for name in required:
             if name not in existing:
                 self.db.create_collection(name)
-                print(f"📁 Created collection: {name}")
 
     # ------------ indexes ------------
 
@@ -94,6 +92,11 @@ class MongoDB:
             [("type", 1), ("key", 1)],
             unique=True,
         )
+        # Live inspection logs
+        self.db.live.create_index("inspection_datetime")
+        self.db.live.create_index("inspection_type")
+        self.db.live.create_index("cam_index")
+
 
     # ------------ default admin ------------
 
@@ -170,7 +173,7 @@ class MongoDB:
                     continue
 
         if fixed:
-            print(f"🔧 Repaired {fixed} corrupted machine records.")
+            print(f"Repaired {fixed} corrupted machine records.")
 
 
 # Global singleton accessor
@@ -379,11 +382,6 @@ class MachineDB:
 # ----------------------------------------------------------------------
 # Camera overrides API (Arena + MVS)
 # ----------------------------------------------------------------------
-
-# ----------------------------------------------------------------------
-# Camera / Mongo health check
-# ----------------------------------------------------------------------
-
 def ensure_mongo_connected() -> bool:
     """
     Simple ping using the shared MongoDB singleton.
@@ -473,3 +471,24 @@ def save_camera_overrides(
             )
         except Exception as e:
             print(f"[db] save_camera_overrides: mvs[{idx}] failed: {e}")
+def insert_live_record(doc: Dict) -> None:
+    """
+    Insert one document into `live` collection.
+
+    Expected (but not strictly required) fields in `doc`:
+      - good_count, bad_count, total_count, cycle
+      - inspection_type
+      - per_image_score, score_text, class_name
+      - input_image, output_image
+      - cam_index
+
+    If `inspection_datetime` is missing, it will be added here.
+    """
+    try:
+        coll = mongo.collection("live")
+        if "inspection_datetime" not in doc:
+            doc["inspection_datetime"] = datetime.utcnow()
+        coll.insert_one(doc)
+    except Exception as e:
+        print(f"[db] insert_live_record: failed to insert: {e}")
+
