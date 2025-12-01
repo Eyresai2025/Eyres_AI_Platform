@@ -382,8 +382,18 @@ class UniversalDetectron2Inferencer:
         if num_classes:
             cfg.MODEL.ROI_HEADS.NUM_CLASSES = int(num_classes)
 
-        self.metadata = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
+        # ---- custom metadata so boxes don't show 'person' ----
+        dataset_name = "app_infer"
+        if num_classes and num_classes > 1:
+            classes = [f"cls_{i}" for i in range(num_classes)]
+        else:
+            classes = ["Dimension"]   # single class = Dimension
+
+        MetadataCatalog.get(dataset_name).set(thing_classes=classes)
+        self.metadata = MetadataCatalog.get(dataset_name)
+
         self.predictor = DefaultPredictor(cfg)
+    
 
     def predict_image(self, img_bgr):
         outputs = self.predictor(img_bgr)
@@ -397,6 +407,62 @@ class UniversalDetectron2Inferencer:
                 "bbox": inst.pred_boxes.tensor[i].tolist() if inst.has("pred_boxes") else [0,0,0,0]
             })
         return dets, inst
+
+def detectron_predict_single(weights, image_path, out_dir, num_classes,
+                             device=None, score_thresh=0.5, cfg_file=None):
+    """
+    Used by live.py:
+    - runs Detectron on ONE image
+    - saves overlay into out_dir/images/<filename>
+    - returns (overlay_path, is_ng, score_text)
+      score_text like 'BAD 0.97' or 'GOOD'
+    """
+    from detectron2.utils.visualizer import Visualizer, ColorMode
+
+    img = cv2.imread(image_path)
+    if img is None:
+        raise RuntimeError(f"Cannot read image: {image_path}")
+
+    infer = UniversalDetectron2Inferencer(
+        weights=weights,
+        cfg_file=cfg_file,
+        device=device,
+        score_thresh=score_thresh,
+        num_classes=num_classes,
+        fp16=False,
+    )
+
+    # run model
+    dets, inst = infer.predict_image(img)
+
+    # draw overlay
+    vis = Visualizer(
+        img[:, :, ::-1],
+        metadata=infer.metadata,
+        scale=1.0,
+        instance_mode=ColorMode.IMAGE,
+    )
+    out_img = vis.draw_instance_predictions(inst).get_image()[:, :, ::-1]
+
+    img_out = _ensure_dir(os.path.join(out_dir, "images"))
+    save_p = os.path.join(img_out, os.path.basename(image_path))
+    cv2.imwrite(save_p, out_img)
+
+    if dets:
+        top = max(dets, key=lambda d: d.get("score", 0.0))
+        top_score = float(top.get("score", 0.0))
+
+        # send only the numeric score as text
+        score_text = f"{top_score:.2f}"
+
+        # BAD if score < 0.98, otherwise GOOD
+        is_ng = (top_score < 0.98)
+    else:
+        # no detections → treat as GOOD, score unknown
+        score_text = "—"
+        is_ng = False
+
+    return save_p, is_ng, score_text
 
 def detectron_infer(weights, source, out_dir, num_classes, device=None, score_thresh=0.5, cfg_file=None):
     from detectron2.utils.visualizer import Visualizer, ColorMode

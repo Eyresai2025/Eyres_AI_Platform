@@ -12,7 +12,9 @@ Includes:
 from typing import Dict, Tuple
 import pymongo
 import hashlib
-from datetime import datetime
+from datetime import datetime, time
+from collections import defaultdict
+
 
 # ----------------------------------------------------------------------
 # MongoDB singleton
@@ -478,7 +480,7 @@ def insert_live_record(doc: Dict) -> None:
     Expected (but not strictly required) fields in `doc`:
       - good_count, bad_count, total_count, cycle
       - inspection_type
-      - per_image_score, score_text, class_name
+      - score_text, class_name
       - input_image, output_image
       - cam_index
 
@@ -492,3 +494,81 @@ def insert_live_record(doc: Dict) -> None:
     except Exception as e:
         print(f"[db] insert_live_record: failed to insert: {e}")
 
+def get_today_live_counts():
+    """
+    Aggregate today's live inspection results.
+    
+    Returns:
+        {
+            "good": int,
+            "bad": int,
+            "total": int
+        }
+    """
+    mongo_inst = MongoDB.get_instance()
+    db = mongo_inst.db
+    coll = db["live"]
+
+    # Use UTC here because insert_live_record uses datetime.utcnow()
+    today = datetime.utcnow().date()
+    start_dt = datetime.combine(today, time.min)
+
+    # Get today's docs
+    docs = list(coll.find({"inspection_datetime": {"$gte": start_dt}}))
+
+    good = 0
+    bad = 0
+
+    for d in docs:
+        is_ng = bool(d.get("is_ng", False))
+
+        if is_ng:
+            bad += 1
+        else:
+            good += 1
+
+    total = good + bad
+
+    return {
+        "good": good,
+        "bad": bad,
+        "total": total,
+    }
+
+
+def get_recent_inspections(limit: int = 30):
+    """
+    Get the most recent inspection records with their output images.
+    
+    Args:
+        limit: Maximum number of records to return
+        
+    Returns:
+        List of documents with _id, inspection_datetime, cam_index, is_ng, 
+        output_image, class_name, score_text, and inspection_type
+    """
+    try:
+        coll = mongo.collection("live")
+        
+        # Get most recent records, sorted by datetime descending
+        cursor = coll.find(
+            {"output_image": {"$exists": True, "$ne": None}},
+            {
+                "_id": 1,
+                "inspection_datetime": 1,
+                "cam_index": 1,
+                "is_ng": 1,
+                "output_image": 1,
+                "class_name": 1,
+                "score_text": 1,
+                "inspection_type": 1,
+                "good_count": 1,
+                "bad_count": 1,
+                "total_count": 1
+            }
+        ).sort("inspection_datetime", -1).limit(limit)
+        
+        return list(cursor)
+    except Exception as e:
+        print(f"[db] get_recent_inspections error: {e}")
+        return []
