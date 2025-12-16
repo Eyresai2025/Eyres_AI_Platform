@@ -1650,7 +1650,7 @@ class AnnotationTool(QtWidgets.QWidget):
         
         # Show confirmation dialog
         format_name = "JSON" if format_choice == "json" else "XML"
-        self.toast(f"Overwrote {saved_count} {fmt} file(s){' with errors' if error_count else ''}.", "success" if error_count == 0 else "warning", 2200)
+        self.toast(f"Overwrote {saved_count} {fmt} file(s){' with errors' if error_count else ''}.", "success" if error_count == 0 else "warning", 2200) # type: ignore
         reply = QtWidgets.QMessageBox.question(self, "Confirm Overwrite",
                                             f"This will overwrite all existing annotation files in the current folder as {format_name} format.\n\n"
                                             "Are you sure you want to continue?",

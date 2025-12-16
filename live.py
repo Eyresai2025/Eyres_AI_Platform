@@ -26,14 +26,14 @@ try:
     from PyQt5 import QtCore, QtGui, QtWidgets
     from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer
 except Exception:
-    from PyQt6 import QtCore, QtGui, QtWidgets
-    from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer
+    from PyQt6 import QtCore, QtGui, QtWidgets # type: ignore
+    from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer # type: ignore
     PYQT6 = True
 
 try:
     from PyQt5.QtCore import pyqtSlot as _pyqtSlot
 except Exception:
-    from PyQt6.QtCore import pyqtSlot as _pyqtSlot
+    from PyQt6.QtCore import pyqtSlot as _pyqtSlot # type: ignore
 
 
 def _app_base_dir() -> Path:

@@ -830,8 +830,8 @@ class ROIPlaceholderWidget(QtWidgets.QWidget):
                 import ROI as roi_mod
             except ImportError:
                 try:
-                    from roi_tool import ROIWindow
-                    import roi_tool as roi_mod
+                    from roi_tool import ROIWindow # type: ignore
+                    import roi_tool as roi_mod # type: ignore
                 except ImportError as e:
                     # Neither ROI nor roi_tool could be imported
                     raise ImportError(f"Could not import ROI.py (or roi_tool.py) from {here}") from e

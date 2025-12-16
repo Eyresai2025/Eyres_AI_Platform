@@ -105,14 +105,14 @@ _ensure_mvs_dll_on_path(wrap_dir)
 if wrap_dir not in sys.path:
     sys.path.insert(0, wrap_dir)
 
-from MvCameraControl_class import *
-from PixelType_header      import *
+from MvCameraControl_class import * # type: ignore
+from PixelType_header      import * # type: ignore
 
 
 
 MV_OK     = getattr(sys.modules['MvCameraControl_class'], "MV_OK", 0)
-PIX_MONO8 = PixelType_Gvsp_Mono8
-PIX_BGR8  = PixelType_Gvsp_BGR8_Packed
+PIX_MONO8 = PixelType_Gvsp_Mono8 # type: ignore
+PIX_BGR8  = PixelType_Gvsp_BGR8_Packed # type: ignore
 # --- add this to hik_capture.py ---
 def enumerate_cameras():
     """
@@ -120,7 +120,7 @@ def enumerate_cameras():
     transport_layer is "GigE" or "USB3".
     """
     try:
-        from MvCameraControl_class import MvCamera, MV_CC_DEVICE_INFO_LIST, MV_CC_DEVICE_INFO, MV_GIGE_DEVICE, MV_USB_DEVICE
+        from MvCameraControl_class import MvCamera, MV_CC_DEVICE_INFO_LIST, MV_CC_DEVICE_INFO, MV_GIGE_DEVICE, MV_USB_DEVICE # type: ignore
         import ctypes
     except Exception as e:
         raise RuntimeError(f"Hik MVS wrappers not available: {e}")
@@ -158,15 +158,15 @@ class Device:
     serial: str
     name: str
     transport: str
-    pinfo: MV_CC_DEVICE_INFO
+    pinfo: MV_CC_DEVICE_INFO # type: ignore
 
 def list_devices() -> List[Device]:
-    devs = MV_CC_DEVICE_INFO_LIST()
-    _sdk_ok(MvCamera().MV_CC_EnumDevices(MV_GIGE_DEVICE | MV_USB_DEVICE, devs), "EnumDevices")
+    devs = MV_CC_DEVICE_INFO_LIST() # type: ignore
+    _sdk_ok(MvCamera().MV_CC_EnumDevices(MV_GIGE_DEVICE | MV_USB_DEVICE, devs), "EnumDevices") # type: ignore
     out: List[Device] = []
     for i in range(devs.nDeviceNum):
-        pinfo = ctypes.cast(devs.pDeviceInfo[i], ctypes.POINTER(MV_CC_DEVICE_INFO)).contents
-        if pinfo.nTLayerType == MV_GIGE_DEVICE:
+        pinfo = ctypes.cast(devs.pDeviceInfo[i], ctypes.POINTER(MV_CC_DEVICE_INFO)).contents # type: ignore
+        if pinfo.nTLayerType == MV_GIGE_DEVICE: # type: ignore
             ser  = ''.join(chr(b) for b in pinfo.SpecialInfo.stGigEInfo.chSerialNumber if b)
             name = ''.join(chr(b) for b in pinfo.SpecialInfo.stGigEInfo.chModelName if b)
             tl   = "GigE"
@@ -177,17 +177,17 @@ def list_devices() -> List[Device]:
         out.append(Device(i, ser, name, tl, pinfo))
     return out
 
-def _open_camera(pinfo: MV_CC_DEVICE_INFO) -> MvCamera:
-    cam = MvCamera()
+def _open_camera(pinfo: MV_CC_DEVICE_INFO) -> MvCamera: # type: ignore
+    cam = MvCamera() # type: ignore
     _sdk_ok(cam.MV_CC_CreateHandle(pinfo), "CreateHandle")
     try:
-        _sdk_ok(cam.MV_CC_OpenDevice(MV_ACCESS_Exclusive, 0), "OpenDevice")
+        _sdk_ok(cam.MV_CC_OpenDevice(MV_ACCESS_Exclusive, 0), "OpenDevice") # type: ignore
     except Exception:
         cam.MV_CC_DestroyHandle()
         raise
     return cam
 
-def _gige_set_optimal_packet_size(cam: MvCamera):
+def _gige_set_optimal_packet_size(cam: MvCamera): # type: ignore
     try:
         size = cam.MV_CC_GetOptimalPacketSize()
         if size and size > 0:
@@ -195,7 +195,7 @@ def _gige_set_optimal_packet_size(cam: MvCamera):
     except Exception:
         pass
 
-def _configure(cam: MvCamera, exposure_us: Optional[float], gain_db: Optional[float]):
+def _configure(cam: MvCamera, exposure_us: Optional[float], gain_db: Optional[float]): # type: ignore
     cam.MV_CC_SetEnumValue("AcquisitionMode", 2)  # Continuous
     cam.MV_CC_SetEnumValue("TriggerMode", 0)      # Off
 
@@ -219,16 +219,16 @@ def _configure(cam: MvCamera, exposure_us: Optional[float], gain_db: Optional[fl
         _set_float_clamped(cam, "Gain", float(gain_db), where="Gain")
 
 
-def _grab_loop(cam: MvCamera, out_dir: str, frames: int, mirror: bool,
+def _grab_loop(cam: MvCamera, out_dir: str, frames: int, mirror: bool, # type: ignore
                progress_cb: Optional[Callable[[int, str], None]] = None):
     os.makedirs(out_dir, exist_ok=True)
     mirror_dir = os.path.join(out_dir, "MIRRORED") if mirror else None
     if mirror_dir: os.makedirs(mirror_dir, exist_ok=True)
 
-    ival = MVCC_INTVALUE()
+    ival = MVCC_INTVALUE() # type: ignore
     _sdk_ok(cam.MV_CC_GetIntValue("PayloadSize", ival), "Get PayloadSize")
     buf  = (ctypes.c_ubyte * ival.nCurValue)()
-    info = MV_FRAME_OUT_INFO_EX()
+    info = MV_FRAME_OUT_INFO_EX() # type: ignore
     params = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
 
     _sdk_ok(cam.MV_CC_StartGrabbing(), "StartGrabbing")
@@ -334,10 +334,10 @@ def grab_live_frame(
         _configure(cam, exposure_us, gain_db)
 
         # Prepare buffer
-        ival = MVCC_INTVALUE()
+        ival = MVCC_INTVALUE() # type: ignore
         _sdk_ok(cam.MV_CC_GetIntValue("PayloadSize", ival), "Get PayloadSize")
         buf = (ctypes.c_ubyte * ival.nCurValue)()
-        info = MV_FRAME_OUT_INFO_EX()
+        info = MV_FRAME_OUT_INFO_EX() # type: ignore
 
         _sdk_ok(cam.MV_CC_StartGrabbing(), "StartGrabbing")
         try:
@@ -390,12 +390,12 @@ def _floatvalue_to_tuple(fv) -> Optional[tuple]:
         return None
 
 
-def _get_float_limits(cam: MvCamera, name: str) -> Optional[Tuple[float, float, float]]:
+def _get_float_limits(cam: MvCamera, name: str) -> Optional[Tuple[float, float, float]]: # type: ignore
     """
     Returns (min, max, cur) for a float node, or None if not supported.
     """
     try:
-        fv = MVCC_FLOATVALUE()
+        fv = MVCC_FLOATVALUE() # type: ignore
         code = cam.MV_CC_GetFloatValue(name, fv)
         if code != MV_OK:
             return None
@@ -413,7 +413,7 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return v
 
 
-def _set_float_clamped(cam: MvCamera, name: str, value: float, where: str = "") -> float:
+def _set_float_clamped(cam: MvCamera, name: str, value: float, where: str = "") -> float: # type: ignore
     """
     Clamp value to node limits (if available) and set it.
     Returns the value actually applied.

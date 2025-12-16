@@ -102,7 +102,7 @@ LINE_ICON_PATH = str(_line_path) if _line_path else ""
 LC_HAS_HELPERS = False
 try:
     # line_capture.py lives in the base folder; we reuse its logic
-    from line_capture import (
+    from line_capture import ( # type: ignore
         setup_singleframe as lc_setup_singleframe,
         snap_one as lc_snap_one,
         save_image_robust as lc_save_image_robust,
