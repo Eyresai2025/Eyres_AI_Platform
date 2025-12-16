@@ -7,6 +7,7 @@ from typing import List
 import hik_capture  
 from pathlib import Path
 from collections import deque
+import cv2
 from db import (
     ensure_mongo_connected,
     load_camera_overrides,
@@ -15,6 +16,8 @@ from db import (
     get_recent_inspections,
 )
 from datetime import datetime  # FIXED: Added missing import
+from gefs_template_offline import run_good_bad_template_matching
+import numpy as np
 
 # Qt Compatibility
 PYQT6 = False
@@ -478,6 +481,66 @@ LIVE_QSS += """
   padding: 12px;
 }
 """
+LIVE_QSS += """
+#CaptureButton {
+  background-color: #1e293b;
+  border-radius: 6px;
+  border: 1px solid #334155;
+  color: #e5e7eb;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 8px;
+}
+#CaptureButton:disabled {
+  background-color: #111827;
+  color: #4b5563;
+  border-color: #1f2937;
+}
+#CaptureButton:hover:enabled {
+  background-color: #334155;
+}
+"""
+
+LIVE_QSS += """
+/* ===== ANOMALY DETECTION PAGE ===== */
+#AnomalyPage {
+  background-color: #020617;
+}
+
+#AnomalyPreviewBox {
+  background-color: #020617;
+  border-radius: 12px;
+  border: 2px solid #1e293b;
+}
+
+#AnomalyPreviewLabel {
+  background-color: #020617;
+  border-radius: 10px;
+  border: 1px dashed #334155;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+#AnomalyButtonsBar {
+  background-color: transparent;
+}
+
+#AnomalyButton {
+  background-color: #1e293b;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  color: #e5e7eb;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 14px;
+  min-width: 140px;
+}
+#AnomalyButton:hover {
+  background-color: #334155;
+}
+"""
+
 
 
 # ----------------------------- Card Widget -----------------------------
@@ -1423,8 +1486,10 @@ class MainWindow(QtWidgets.QMainWindow):
             "weights": None,
             "num_classes": None,   # detectron only
             "device": None,        # optional
-            "out_dir": None,       # temp per run
+            "out_dir": None,       # temp per run (will change to results/..._op/...)
+            "ip_dir": None,        # NEW: results/..._ip/... for input images
         }
+
         self._infer_pool = ThreadPoolExecutor(max_workers=2)
 
         # ---- state & maps ----
@@ -1442,6 +1507,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._infer_pool = ThreadPoolExecutor(max_workers=2)
         self.infer_result.connect(self._apply_infer_result)
         self._current_input: dict[int, str] = {}
+        # Last saved GOOD template (for anomaly stage later)
+        self._last_good_template_path: str | None = None
+
+        # ---- manual one-shot capture mode ----
+        self._single_capture_mode = False
+        self._single_cap_cam_indices: list[int] = []
+        self._capture_running = False
+        # --- Anomaly live preview timer & state ---
+        self.anomaly_timer = QTimer(self)
+        self.anomaly_timer.timeout.connect(self._update_anomaly_preview)
+        self._anomaly_cam_index = None
+        self._anomaly_last_frame = None
         # ---- root containers ----
         central = QtWidgets.QWidget()
         root = QtWidgets.QHBoxLayout(central)
@@ -1541,14 +1618,23 @@ class MainWindow(QtWidgets.QMainWindow):
         side.addWidget(self.summaryBox)
         side.addSpacing(6)
 
+
         # ============ Reset button ============
         self.btnReset = QtWidgets.QPushButton("Reset Counts / Images")
         self.btnReset.setObjectName("ResetButton")
         self.btnReset.clicked.connect(self._reset_all)
         side.addWidget(self.btnReset)
 
+        # # ============ NEW: Manual Capture button ============
+        # self.btnCapture = QtWidgets.QPushButton("Capture")
+        # self.btnCapture.setObjectName("CaptureButton")
+        # self.btnCapture.setEnabled(False)  # only enabled in manual mode
+        # self.btnCapture.clicked.connect(self._manual_capture_trigger)
+        # side.addWidget(self.btnCapture)
+
         # ============ Rejection Bypass (toggle switch) ============
         bypassRow = QtWidgets.QHBoxLayout()
+
         self.lblBypass = QtWidgets.QLabel("Rejection Bypass")
         self.lblBypass.setStyleSheet("color:#e5e7eb; font-size:11px; font-weight:600;")
         self.toggleBypass = ToggleSwitch()
@@ -1647,7 +1733,7 @@ class MainWindow(QtWidgets.QMainWindow):
         headerLayout.setContentsMargins(0, 4, 0, 4)
         headerLayout.setSpacing(8)
 
-        # the two options
+        # the three options
         self.btnLiveTab = QtWidgets.QPushButton("Live Inspection")
         self.btnLiveTab.setObjectName("TabButton")
         self.btnLiveTab.setProperty("active", True)
@@ -1658,10 +1744,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btnPrevTab.setProperty("active", False)
         self.btnPrevTab.setFlat(True)
 
+        self.btnAnomalyTab = QtWidgets.QPushButton("Anomaly Detection")
+        self.btnAnomalyTab.setObjectName("TabButton")
+        self.btnAnomalyTab.setProperty("active", False)
+        self.btnAnomalyTab.setFlat(True)
+
         # place them near the left; add stretch on the right
         headerLayout.addWidget(self.btnLiveTab)
         headerLayout.addWidget(self.btnPrevTab)
+        headerLayout.addWidget(self.btnAnomalyTab)
         headerLayout.addStretch(1)
+
 
         self.gridHostLayout.addWidget(headerFrame)
 
@@ -1792,12 +1885,114 @@ class MainWindow(QtWidgets.QMainWindow):
 
         prevMainLayout.addWidget(images_container, 1)  # Take remaining space
 
-        # Stack the two pages and put the stack under the header
+        # ----- ANOMALY DETECTION PAGE -----
+        self.anomalyPage = QtWidgets.QWidget()
+        self.anomalyPage.setObjectName("AnomalyPage")
+        anomalyLayout = QtWidgets.QVBoxLayout(self.anomalyPage)
+        # slightly smaller margins so the image can grow more
+        anomalyLayout.setContentsMargins(16, 4, 16, 12)
+        anomalyLayout.setSpacing(10)
+
+        # Preview box (centered image)
+        previewBox = QtWidgets.QFrame()
+        previewBox.setObjectName("AnomalyPreviewBox")
+        previewLayout = QtWidgets.QVBoxLayout(previewBox)
+        # reduce inner padding so image uses almost all of the box
+        previewLayout.setContentsMargins(8, 8, 8, 8)
+        previewLayout.setSpacing(4)
+
+        self.anomalyPreviewLabel = QtWidgets.QLabel("Live preview will appear here")
+        self.anomalyPreviewLabel.setObjectName("AnomalyPreviewLabel")
+        self.anomalyPreviewLabel.setAlignment(AlignCenter)
+
+        # 🔹 BIGGER IMAGE AREA
+        # increase the minimum size and let it expand with the window
+        self.anomalyPreviewLabel.setMinimumSize(1100, 620)
+        self.anomalyPreviewLabel.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding
+        )
+
+        # center label, let it take all vertical space in the preview box
+        previewLayout.addWidget(self.anomalyPreviewLabel, 1, AlignCenter)
+
+        anomalyLayout.addWidget(previewBox, 1)
+
+
+        # Try to use same camera placeholder image
+        cam_img_path = _find_camera_image()
+        if cam_img_path is not None:
+            pm = QtGui.QPixmap(str(cam_img_path))
+            if not pm.isNull():
+                pm = pm.scaled(800, 450, KeepAspect, Smooth)
+                self.anomalyPreviewLabel.setPixmap(pm)
+                self.anomalyPreviewLabel.setText("")
+
+
+
+        previewLayout.addStretch(1)
+        previewLayout.addWidget(self.anomalyPreviewLabel, 0, AlignCenter)
+        previewLayout.addStretch(1)
+
+        anomalyLayout.addWidget(previewBox, 1)
+
+        # Buttons row under the preview
+        buttonsBar = QtWidgets.QFrame()
+        buttonsBar.setObjectName("AnomalyButtonsBar")
+        buttonsLayout = QtWidgets.QHBoxLayout(buttonsBar)
+        buttonsLayout.setContentsMargins(0, 0, 0, 0)
+        buttonsLayout.setSpacing(12)
+
+        # Left stretch to center the group
+        buttonsLayout.addStretch(1)
+
+        self.btnTemplateCreation = QtWidgets.QPushButton("Template Creation")
+        self.btnTemplateCreation.setObjectName("AnomalyButton")
+        self.btnTemplateCreation.setFixedHeight(40)
+
+        self.btnAnomalyDetect = QtWidgets.QPushButton("Anomaly Detection")
+        self.btnAnomalyDetect.setObjectName("AnomalyButton")
+        self.btnAnomalyDetect.setFixedHeight(40)
+
+        self.btnSyntheticDefect = QtWidgets.QPushButton("Synthetic Defect Creation")
+        self.btnSyntheticDefect.setObjectName("AnomalyButton")
+        self.btnSyntheticDefect.setFixedHeight(40)
+
+        self.btnClassification = QtWidgets.QPushButton("Load")
+        self.btnClassification.setObjectName("AnomalyButton")
+        self.btnClassification.setFixedHeight(40)
+
+        self.btnAnomalyClear = QtWidgets.QPushButton("Clear")
+        self.btnAnomalyClear.setObjectName("AnomalyButton")
+        self.btnAnomalyClear.setFixedHeight(40)
+        self.btnTemplateCreation.clicked.connect(self._handle_template_creation)
+        self.btnAnomalyDetect.clicked.connect(self._handle_anomaly_detection)
+        self.btnAnomalyClear.clicked.connect(self._handle_anomaly_clear)
+        self.btnSyntheticDefect.clicked.connect(self._handle_synthetic_defect)
+        self.btnClassification.clicked.connect(self._handle_anomaly_load)
+
+        for b in (
+            self.btnTemplateCreation,
+            self.btnAnomalyDetect,
+            self.btnSyntheticDefect,
+            self.btnClassification,
+            self.btnAnomalyClear,
+        ):
+            buttonsLayout.addWidget(b)
+        # Right stretch to keep them centered
+        buttonsLayout.addStretch(1)
+
+        anomalyLayout.addWidget(buttonsBar, 0)
+
+
+        # Stack the pages and put the stack under the header
         self.stack = QtWidgets.QStackedLayout()
-        self.stack.addWidget(self.livePage)   # index 0
-        self.stack.addWidget(self.prevPage)   # index 1
+        self.stack.addWidget(self.livePage)     # index 0
+        self.stack.addWidget(self.prevPage)     # index 1
+        self.stack.addWidget(self.anomalyPage)  # index 2
         self.gridHostLayout.addLayout(self.stack, 1)
-        self.stack.setCurrentWidget(self.livePage) # stretch=1 ->
+        self.stack.setCurrentWidget(self.livePage)
+
 
         # add sidebar + right side to root layout
         root.addWidget(self.sidebar)
@@ -1805,25 +2000,36 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # simple toggle for active style + page switch
         def _set_tab_mode(mode: str):
-            live_active = (mode == "live")
+            live_active    = (mode == "live")
+            prev_active    = (mode == "previous")
+            anomaly_active = (mode == "anomaly")
             
             # header highlight
             self.btnLiveTab.setProperty("active", live_active)
-            self.btnPrevTab.setProperty("active", not live_active)
-            for btn in (self.btnLiveTab, self.btnPrevTab):
+            self.btnPrevTab.setProperty("active", prev_active)
+            self.btnAnomalyTab.setProperty("active", anomaly_active)
+
+            for btn in (self.btnLiveTab, self.btnPrevTab, self.btnAnomalyTab):
                 btn.style().unpolish(btn)
                 btn.style().polish(btn)
+            if anomaly_active:
+                self._start_anomaly_preview()
+            else:
+                self._stop_anomaly_preview()
             
             # switch stacked page
             if live_active:
                 self.stack.setCurrentWidget(self.livePage)
-            else:
-                # Load previous inspections when switching to that tab
+            elif prev_active:
                 self.stack.setCurrentWidget(self.prevPage)
                 self.load_previous_inspections()
+            else:  # anomaly
+                self.stack.setCurrentWidget(self.anomalyPage)
 
         self.btnLiveTab.clicked.connect(lambda: _set_tab_mode("live"))
         self.btnPrevTab.clicked.connect(lambda: _set_tab_mode("previous"))
+        self.btnAnomalyTab.clicked.connect(lambda: _set_tab_mode("anomaly"))
+
 
         self.cards: list[CardWidget] = []
         self.apply_theme()
@@ -1836,6 +2042,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.has_results = False                                     
         self._refresh_summary()  
         self._init_counts_from_db()
+    
+    def _get_latest_image_in_folder(self, folder: Path) -> str | None:
+        """
+        Return path of latest image file in a folder, or None if nothing found.
+        """
+        exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+        if not folder.is_dir():
+            return None
+
+        candidates = [
+            p for p in folder.iterdir()
+            if p.is_file() and p.suffix.lower() in exts
+        ]
+        if not candidates:
+            return None
+
+        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        return str(latest)
+
     
     def load_previous_inspections(self):
         """Load and display the last 30 inspections in the previous page."""
@@ -1899,6 +2124,954 @@ class MainWindow(QtWidgets.QMainWindow):
             error_label.setAlignment(AlignCenter)
             self.prev_grid_layout.addWidget(error_label, 0, 0)
 
+    def start_manual_capture_mode(self):
+        """
+        NEW MANUAL FLOW (for Start Capture):
+
+          1) Ask to capture GOOD image
+          2) Ask to capture BAD image
+          3) Ask for threshold value
+          4) Run template matching(GOOD, BAD, threshold)
+        """
+        # Ensure window is visible and focused
+        self.showMaximized()
+        self.raise_()
+        self.activateWindow()
+
+        QtCore.QTimer.singleShot(50, self._start_manual_capture_mode_actual)
+
+    def _start_manual_capture_mode_actual(self):
+        # 1) Check cameras
+        try:
+            devs = hik_capture.list_devices()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Camera Error", f"Failed to list Hikrobot devices:\n{e}"
+            )
+            return
+
+        if not devs:
+            QtWidgets.QMessageBox.critical(
+                self, "No Cameras",
+                "No Hikrobot cameras detected for manual capture."
+            )
+            return
+
+        # For template matching we will use ONLY the first camera
+        cam_index = devs[0].index
+
+        # Prepare single card for display
+        self._build_cards(1)
+        self.has_results = False
+        self.good = 0
+        self.bad = 0
+        self._last_is_ng = None
+        self._refresh_summary()
+
+        # ---------------- STEP 1: CAPTURE GOOD IMAGE ----------------
+        reply_good = QtWidgets.QMessageBox.question(
+            self,
+            "Capture GOOD Image",
+            "Step 1/3:\n\nPlace a GOOD tyre and focus the camera.\n\n"
+            "Click 'Yes' to CAPTURE the GOOD image.\n"
+            "Click 'No' to cancel.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if reply_good != QtWidgets.QMessageBox.Yes:
+            return
+
+        good_img_path = self._capture_one_image_for_template(cam_index, mode="good")
+        if not good_img_path:
+            QtWidgets.QMessageBox.warning(self, "Capture failed", "Could not capture GOOD image.")
+            return
+
+        # Show GOOD image in the card (optional)
+        if self.cards:
+            self.cards[0].set_image(good_img_path)
+
+        # ---------------- STEP 2: CAPTURE BAD IMAGE ----------------
+        reply_bad = QtWidgets.QMessageBox.question(
+            self,
+            "Capture BAD Image",
+            "Step 2/3:\n\nNow place a BAD tyre and focus the camera.\n\n"
+            "Click 'Yes' to CAPTURE the BAD image.\n"
+            "Click 'No' to cancel.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if reply_bad != QtWidgets.QMessageBox.Yes:
+            return
+
+        bad_img_path = self._capture_one_image_for_template(cam_index, mode="bad")
+        if not bad_img_path:
+            QtWidgets.QMessageBox.warning(self, "Capture failed", "Could not capture BAD image.")
+            return
+
+        # ---------------- STEP 3: ASK THRESHOLD ----------------
+        threshold, ok_thr = QtWidgets.QInputDialog.getDouble(
+            self,
+            "Template Threshold",
+            "Step 3/3:\n\nEnter similarity threshold (0–1):\n"
+            "Blocks with similarity <= threshold are treated as DEFECT.",
+            0.9999996,   # default, you can change
+            0.0,
+            1.0,
+            7            # decimals
+        )
+        if not ok_thr:
+            return
+
+        # ---------------- STEP 4: RUN TEMPLATE MATCHING ----------------
+        try:
+            overall_sim, overlay_path, decision = self._run_good_bad_template_matching_ui(
+                good_img_path, bad_img_path, threshold
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Template Matching Error",
+                f"Error during template matching:\n{e}"
+            )
+            return
+
+        # Update UI with overlay + GOOD/NG decision
+        if self.cards and overlay_path:
+            self.cards[0].set_image(overlay_path)
+
+        # Use the returned decision flag
+        is_ng = (decision.upper() == "BAD")
+
+        self.good = 0
+        self.bad = 0
+        if is_ng:
+            self.bad = 1
+            self.cards[0].set_ng()
+        else:
+            self.good = 1
+            self.cards[0].set_good()
+
+        self._last_is_ng = is_ng
+        self.has_results = True
+        self._refresh_summary()
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Manual Template Matching",
+            f"Done.\n\nOverall similarity: {overall_sim:.10f}\n"
+            f"Threshold: {threshold:.10f}\n"
+            f"Result: {'NG (Defect)' if is_ng else 'GOOD'}"
+        )
+    
+    def _capture_one_image_for_template(self, cam_index: int, mode: str = "good") -> str:
+        """
+        Synchronous helper to capture exactly ONE image from a Hikrobot camera
+        using hik_capture.capture_multi.
+
+        mode: 'good' or 'bad' -> used for filename prefix.
+        Returns saved image path, or "" on failure.
+        """
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            out_dir = os.path.join(base_dir, "captures_template")
+            os.makedirs(out_dir, exist_ok=True)
+
+            saved_path = {"p": ""}
+
+            def _cb(c_idx, frame_i, path):
+                # callback from hik_capture.capture_multi
+                saved_path["p"] = path
+
+            # Get exposure/gain overrides
+            ov = self._mvs_overrides.get(cam_index) if hasattr(self, "_mvs_overrides") else None
+            exposure = float(ov["ExposureTime"]) if ov and "ExposureTime" in ov else None
+            gain = float(ov["Gain"]) if ov and "Gain" in ov else None
+
+            # Capture the image
+            hik_capture.capture_multi(
+                indices=[cam_index],
+                frames=1,
+                base_out=out_dir,
+                mirror=False,
+                exposure_us=exposure,
+                gain_db=gain,
+                progress_cb=_cb,
+            )
+
+            # Rename the captured file with mode prefix
+            if saved_path["p"]:
+                old_path = Path(saved_path["p"])
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                new_name = f"{mode}_{ts}.png"
+                new_path = old_path.parent / new_name
+                
+                try:
+                    old_path.rename(new_path)
+                    saved_path["p"] = str(new_path)
+                except Exception as rename_error:
+                    print(f"[template-capture] rename error: {rename_error}")
+                    # Keep original path if rename fails
+
+            return saved_path["p"]
+        except Exception as e:
+            print(f"[template-capture] error: {e}")
+            return ""
+
+
+
+    # def start_manual_capture_mode(self):
+    #     """
+    #     Setup manual one-shot capture mode:
+    #     - Ask YOLO/Detectron, weights, num_cams (like live mode)
+    #     - Build cards and dev_map
+    #     - Enable Capture button
+    #     """
+    #     # Ensure window is visible and focused
+    #     self.showMaximized()
+    #     self.raise_()
+    #     self.activateWindow()
+
+    #     QtCore.QTimer.singleShot(50, self._start_manual_capture_mode_actual)
+
+    # def _start_manual_capture_mode_actual(self):
+    #     # 1) List cameras
+    #     try:
+    #         devs = hik_capture.list_devices()
+    #     except Exception as e:
+    #         QtWidgets.QMessageBox.critical(
+    #             self, "Camera Error", f"Failed to list Hikrobot devices:\n{e}"
+    #         )
+    #         return
+
+    #     if not devs:
+    #         QtWidgets.QMessageBox.critical(
+    #             self, "No Cameras",
+    #             "No Hikrobot cameras detected for manual capture."
+    #         )
+    #         return
+
+    #     n_max = min(8, len(devs))
+
+    #     # 2) Ask backend / weights / num_cams with same dialog as live mode
+    #     dlg = LiveConfigDialog(max_cams=n_max, parent=self)
+    #     dlg.setWindowModality(QtCore.Qt.ApplicationModal)
+    #     result = dlg.exec() if PYQT6 else dlg.exec_()
+
+    #     # refocus main window
+    #     self.raise_()
+    #     self.activateWindow()
+
+    #     if result != QtWidgets.QDialog.Accepted:
+    #         return
+
+    #     cfg = dlg.get_values()
+    #     backend     = cfg["backend"]
+    #     weights     = cfg["weights"]
+    #     num_cams    = cfg["num_cams"]
+    #     num_classes = cfg["num_classes"]
+
+    #     # 3) Save inference config (NO continuous capture)
+    #     self._infer_cfg["backend"]     = backend
+    #     self._infer_cfg["weights"]     = weights
+    #     self._infer_cfg["num_classes"] = num_classes
+    #     self._infer_cfg["device"]      = "cuda"  # Inference.py will fall back if needed
+
+    #     # (If you also applied the results/ trial logic, you can call _prepare_run_dirs() here)
+    #     # self._prepare_run_dirs()
+
+    #     self.lblInspVal.setText(f"{backend.upper()} (MANUAL)")
+
+    #     # 4) Choose first N devices
+    #     cam_indices = [d.index for d in devs[:num_cams]]
+    #     self._single_cap_cam_indices = cam_indices
+    #     self._single_capture_mode = True
+
+    #     # 5) Build cards and dev map ONCE
+    #     self._build_cards(num_cams)
+    #     self._dev_map = {cam_idx: i for i, cam_idx in enumerate(cam_indices)}
+    #     self.has_results = True
+    #     self._reset_counters(soft=False)
+
+    #     # 6) Enable Capture button
+    #     self.btnCapture.setEnabled(True)
+    # def _manual_capture_trigger(self):
+    #     """
+    #     Called when the sidebar 'Capture' button is pressed.
+    #     Capture exactly 1 frame per selected camera, run inference,
+    #     and update UI. Then wait for next press.
+    #     """
+    #     if not self._single_capture_mode or not self._single_cap_cam_indices:
+    #         QtWidgets.QMessageBox.warning(
+    #             self, "Manual Capture",
+    #             "Manual capture mode is not configured. Use 'Start Capture' in main UI."
+    #         )
+    #         return
+
+    #     # Start one-shot CaptureWorker
+    #     self._start_manual_capture_worker()
+
+    # def _start_manual_capture_worker(self):
+    #     cam_indices = self._single_cap_cam_indices
+    #     if not cam_indices:
+    #         return
+
+    #     base_dir = os.path.dirname(os.path.abspath(__file__))
+    #     out_dir  = os.path.join(base_dir, "captures")
+    #     os.makedirs(out_dir, exist_ok=True)
+
+    #     # Build per-camera exposure/gain maps from overrides, like _make_capture_bridge
+    #     exp_map: dict[int, float] = {}
+    #     gain_map: dict[int, float] = {}
+    #     for cam_idx in cam_indices:
+    #         ov = self._mvs_overrides.get(cam_idx) if hasattr(self, "_mvs_overrides") else None
+    #         if not ov:
+    #             continue
+    #         if "ExposureTime" in ov:
+    #             exp_map[cam_idx] = float(ov["ExposureTime"])
+    #         if "Gain" in ov:
+    #             gain_map[cam_idx] = float(ov["Gain"])
+
+    #     # New thread & worker for ONE frame per camera
+    #     self._cap_thread = QtCore.QThread(self)
+    #     self._cap_worker = CaptureWorker(
+    #         cam_indices,
+    #         frames=1,          # <--- important: ONE frame per cam per click
+    #         out_dir=out_dir,
+    #         mirror=False,
+    #         exposure_map=exp_map,
+    #         gain_map=gain_map,
+    #     )
+    #     self._cap_worker.moveToThread(self._cap_thread)
+
+    #     self._cap_thread.started.connect(self._cap_worker.run)
+    #     self._cap_worker.frameCaptured.connect(self._on_frame_captured_and_enqueue)
+    #     self._cap_worker.error.connect(self._on_capture_error)
+    #     self._cap_worker.cycleTick.connect(self._on_cycle_tick)
+    #     self._cap_worker.finished.connect(self._on_capture_finished)
+    #     self._cap_worker.finished.connect(self._cap_thread.quit)
+    #     self._cap_worker.finished.connect(self._cap_worker.deleteLater)
+    #     self._cap_thread.finished.connect(self._cap_thread.deleteLater)
+
+    #     self._cap_thread.start()
+
+    def _run_good_bad_template_matching_ui(self, good_img_path: str, bad_img_path: str, threshold: float):
+        """
+        Thin wrapper around offline GEFS/SEFS template matching.
+
+        Uses run_good_bad_template_matching(...) from gefs_template_offline.py.
+        Returns:
+            overall_similarity (float),
+            overlay_path (str),
+            decision (str: 'GOOD' or 'BAD')
+        """
+        overall_sim, overlay_path, decision = run_good_bad_template_matching(
+            good_img_path=good_img_path,
+            bad_img_path=bad_img_path,
+            threshold=threshold,
+        )
+        return overall_sim, overlay_path, decision
+
+
+    def _prepare_run_dirs(self):
+        """
+        Create results/<backend>_op/trial_xxx and results/<backend>_ip/trial_xxx
+        and store them in self._infer_cfg["out_dir"] (op) and ["ip_dir"] (ip).
+        """
+        base_dir = _app_base_dir()  # respects PyInstaller / _MEIPASS
+        results_root = base_dir / "results"
+
+        backend = (self._infer_cfg.get("backend") or "yolo").lower()
+        if backend == "detectron":
+            prefix = "detec"
+        else:
+            prefix = "yolo"
+
+        op_root = results_root / f"{prefix}_op"
+        ip_root = results_root / f"{prefix}_ip"
+        op_root.mkdir(parents=True, exist_ok=True)
+        ip_root.mkdir(parents=True, exist_ok=True)
+
+        # Find next trial number from op_root
+        max_n = 0
+        for d in op_root.iterdir():
+            if not d.is_dir():
+                continue
+            name = d.name
+            try:
+                if name.startswith("trial_"):
+                    n = int(name.split("_", 1)[1])
+                else:
+                    n = int(name)
+                max_n = max(max_n, n)
+            except ValueError:
+                continue
+
+        next_n = max_n + 1
+        trial_name = f"trial_{next_n:03d}"
+
+        op_trial = op_root / trial_name
+        ip_trial = ip_root / trial_name
+        op_trial.mkdir(parents=True, exist_ok=True)
+        ip_trial.mkdir(parents=True, exist_ok=True)
+
+        self._infer_cfg["out_dir"] = str(op_trial)
+        self._infer_cfg["ip_dir"] = str(ip_trial)
+
+    def _handle_template_creation(self):
+        """
+        When user clicks 'Template Creation' on Anomaly page:
+
+        • Use the CURRENT anomaly preview frame (self._anomaly_last_frame)
+        • Save that frame as GOOD template in templates/good
+        • In parallel, save the SAME image into templates/Exist
+        • Freeze the preview on that image (show the captured GOOD image)
+        • DON'T show popup (silently save)
+        """
+
+        if self._anomaly_last_frame is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Preview Frame",
+                "No live preview frame is available.\n\n"
+                "Please ensure the anomaly live preview is visible, then click Template Creation again."
+            )
+            return
+
+        base_dir = _app_base_dir()
+
+        # 🔹 Folders: templates/good and templates/Exist
+        tmpl_root = base_dir / "templates"
+        tmpl_dir = tmpl_root / "good"
+        exist_dir = tmpl_root / "Exist"
+
+        tmpl_dir.mkdir(parents=True, exist_ok=True)
+        exist_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        good_path = tmpl_dir / f"good_{ts}.png"
+        exist_path = exist_dir / f"good_{ts}.png"
+
+        img = self._anomaly_last_frame  # numpy array (grayscale)
+
+        # Save to GOOD
+        ok_good = cv2.imwrite(str(good_path), img)
+        if not ok_good:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Save Error",
+                f"Failed to save GOOD template to:\n{good_path}"
+            )
+            return
+
+        # Save to templates/Exist
+        ok_exist = cv2.imwrite(str(exist_path), img)
+        
+        self._last_good_template_path = str(good_path)
+
+        self._stop_anomaly_preview()
+
+        # ----- Convert captured image to QPixmap and display it -----
+        # Convert numpy array to QPixmap directly without saving/loading
+        height, width = img.shape
+        bytes_per_line = width
+        qimg = QtGui.QImage(
+            img.data,
+            width,
+            height,
+            bytes_per_line,
+            QtGui.QImage.Format_Grayscale8
+        ).copy()  # Important: copy the data
+        
+        pm = QtGui.QPixmap.fromImage(qimg)
+        
+        if not pm.isNull():
+            # Scale to fit the preview label
+            pm = pm.scaled(
+                self.anomalyPreviewLabel.size(),
+                KeepAspect,
+                Smooth
+            )
+            # Show the captured GOOD image
+            self.anomalyPreviewLabel.setPixmap(pm)
+            self.anomalyPreviewLabel.setText("")
+            
+            # ----- Show temporary success message as overlay -----
+            # Create a semi-transparent overlay with success message
+            overlay_pixmap = pm.copy()
+            painter = QtGui.QPainter(overlay_pixmap)
+            
+            # Draw semi-transparent background for text
+            painter.setBrush(QtGui.QColor(0, 0, 0, 180))  # Black with transparency
+            painter.setPen(QtCore.Qt.NoPen)
+            
+            # Text rectangle (centered)
+            text_rect = QtCore.QRect(0, 0, overlay_pixmap.width(), 50)
+            text_rect.moveCenter(QtCore.QPoint(overlay_pixmap.width() // 2, 
+                                            overlay_pixmap.height() // 2))
+            painter.drawRect(text_rect)
+            
+            # Draw success text
+            painter.setPen(QtGui.QColor(34, 197, 94))  # Green color
+            font = painter.font()
+            font.setPointSize(14)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(text_rect, QtCore.Qt.AlignCenter, "✓ Template Saved")
+            
+            painter.end()
+            
+            # Show the image with overlay
+            self.anomalyPreviewLabel.setPixmap(overlay_pixmap)
+            
+            # Clear overlay after 1.5 seconds, keep showing the GOOD image
+            QtCore.QTimer.singleShot(1500, lambda: self.anomalyPreviewLabel.setPixmap(pm))
+            
+        else:
+            # Fallback if pixmap creation fails
+            self.anomalyPreviewLabel.setText("Template saved ✓")
+            # Clear text after 2 seconds
+            QtCore.QTimer.singleShot(2000, lambda: self.anomalyPreviewLabel.setText(""))
+
+
+    def _handle_anomaly_detection(self):
+        """
+        MODIFIED: Skip BAD image capture popup, directly capture and ask for threshold.
+        Also removed final result popup.
+        """
+
+        # -------- 1) Check if camera is available --------
+        try:
+            devs = hik_capture.list_devices()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Camera Error",
+                f"Failed to list Hikrobot devices:\n{e}"
+            )
+            return
+
+        if not devs:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "No Camera",
+                "No Hikrobot camera detected for capturing BAD image."
+            )
+            return
+
+        # Use first camera
+        cam_index = devs[0].index
+
+        # -------- 2) Stop live preview BEFORE capture --------
+        self._stop_anomaly_preview()  # <--- ADD THIS LINE
+        
+        # -------- 3) Directly capture BAD image --------
+        self.anomalyPreviewLabel.setText("Capturing BAD image...")
+        QtWidgets.QApplication.processEvents()  # Update UI
+
+        bad_img_path = self._capture_one_image_for_template(cam_index, mode="bad")
+        if not bad_img_path:
+            # Restart preview if capture failed
+            self._start_anomaly_preview()  # <--- ADD THIS LINE
+            QtWidgets.QMessageBox.warning(
+                self, 
+                "Capture failed", 
+                "Could not capture BAD image."
+            )
+            return
+
+        # Show captured BAD image temporarily
+        try:
+            pm = QtGui.QPixmap(bad_img_path)
+            if not pm.isNull():
+                pm = pm.scaled(
+                    self.anomalyPreviewLabel.size(),
+                    KeepAspect,
+                    Smooth
+                )
+                self.anomalyPreviewLabel.setPixmap(pm)
+        except Exception:
+            pass
+
+        # -------- 4) Save BAD image to templates/bad folder --------
+        base_dir = _app_base_dir()
+        bad_dir = Path(base_dir) / "templates" / "bad"
+        bad_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bad_final_path = bad_dir / f"bad_{ts}.png"
+
+        try:
+            # Copy the captured image to templates/bad
+            shutil.copy2(bad_img_path, bad_final_path)
+            bad_img_path = str(bad_final_path)  # Use the new path
+        except Exception as e:
+            # Continue with original captured path even if save fails
+            pass
+
+        # -------- 5) Check for GOOD template --------
+        good_dir = Path(base_dir) / "templates" / "good"
+        good_path = self._get_latest_image_in_folder(good_dir)
+
+        if not good_path:
+            # Restart preview if no template
+            self._start_anomaly_preview()  # <--- ADD THIS LINE
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No GOOD Template",
+                "No GOOD template image found in:\n"
+                f"{good_dir}\n\n"
+                "Please create a GOOD template first using 'Template Creation'."
+            )
+            return
+
+        # -------- 6) Ask for similarity threshold --------
+        threshold, ok_thr = QtWidgets.QInputDialog.getDouble(
+            self,
+            "Template Threshold",
+            "Enter similarity threshold (0–1):\n"
+            "Blocks with similarity <= threshold are treated as DEFECT.",
+            0.9999995,   # default
+            0.0,
+            1.0,
+            7            # decimals
+        )
+        if not ok_thr:
+            # Restart preview if cancelled
+            self._start_anomaly_preview()  # <--- ADD THIS LINE
+            return
+
+        # -------- 7) Show processing message --------
+        self.anomalyPreviewLabel.setText("Processing...")
+        QtWidgets.QApplication.processEvents()  # Update UI
+
+        # -------- 8) Run GEFS/SEFS template matching --------
+        try:
+            overall_sim, overlay_path, decision = self._run_good_bad_template_matching_ui(
+                good_path,
+                bad_img_path,  # Use the captured BAD image
+                threshold
+            )
+        except Exception as e:
+            # Restart preview if error
+            self._start_anomaly_preview()  # <--- ADD THIS LINE
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Anomaly Detection Error",
+                f"Error during anomaly detection:\n{e}"
+            )
+            return
+
+        # -------- 9) Save result into templates/output --------
+        out_dir = Path(base_dir) / "templates" / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        final_overlay_path = None
+        try:
+            if overlay_path and os.path.isfile(overlay_path):
+                # Copy overlay to output folder with timestamped name
+                dest_overlay = out_dir / f"overlay_{ts}.png"
+                shutil.copy2(overlay_path, dest_overlay)
+                final_overlay_path = str(dest_overlay)
+            else:
+                # Fallback: if no overlay, copy BAD image
+                dest_overlay = out_dir / f"overlay_{ts}.png"
+                shutil.copy2(bad_img_path, dest_overlay)
+                final_overlay_path = str(dest_overlay)
+        except Exception as e:
+            print("[anomaly] failed to store overlay in output:", e)
+            # Use whatever overlay we got
+            if overlay_path and os.path.isfile(overlay_path):
+                final_overlay_path = overlay_path
+            else:
+                final_overlay_path = bad_img_path
+
+        # -------- 10) Show overlay in anomaly preview --------
+        try:
+            pm = QtGui.QPixmap(final_overlay_path)
+            if not pm.isNull():
+                pm = pm.scaled(
+                    self.anomalyPreviewLabel.size(),
+                    KeepAspect,
+                    Smooth
+                )
+                self.anomalyPreviewLabel.setPixmap(pm)
+                self.anomalyPreviewLabel.setText("")
+                
+                # ----- Show brief status message on the image -----
+                # Create a copy to draw on
+                status_pixmap = pm.copy()
+                painter = QtGui.QPainter(status_pixmap)
+                
+                # Draw semi-transparent status bar at bottom
+                status_height = 40
+                status_rect = QtCore.QRect(0, pm.height() - status_height, pm.width(), status_height)
+                painter.setBrush(QtGui.QColor(0, 0, 0, 180))
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.drawRect(status_rect)
+                
+                # Draw result text
+                is_ng = decision.upper() == "BAD"
+                color = QtGui.QColor(239, 68, 68) if is_ng else QtGui.QColor(34, 197, 94)  # Red for NG, Green for GOOD
+                painter.setPen(color)
+                font = painter.font()
+                font.setPointSize(12)
+                font.setBold(True)
+                painter.setFont(font)
+                
+                result_text = f"{decision} | Similarity: {overall_sim:.6f}"
+                painter.drawText(status_rect, QtCore.Qt.AlignCenter, result_text)
+                painter.end()
+                
+                # Show image with status
+                self.anomalyPreviewLabel.setPixmap(status_pixmap)
+                
+                # Remove status after 3 seconds, keep showing the overlay
+                QtCore.QTimer.singleShot(3000, lambda: self.anomalyPreviewLabel.setPixmap(pm))
+                
+                # DO NOT restart live preview timer here - keep showing the result!
+                # The result will stay until user clicks "Clear" or switches tabs
+            else:
+                self.anomalyPreviewLabel.setPixmap(QtGui.QPixmap())
+                self.anomalyPreviewLabel.setText("Overlay image could not be loaded.")
+        except Exception as e:
+            print("[anomaly] failed to show overlay:", e)
+            self.anomalyPreviewLabel.setPixmap(QtGui.QPixmap())
+            self.anomalyPreviewLabel.setText("Error showing overlay.")
+            # Restart preview on error
+            self._start_anomaly_preview()
+
+        # -------- REMOVED: Show result summary popup -----
+        # OLD CODE (COMMENTED):
+        # QtWidgets.QMessageBox.information(
+        #     self,
+        #     "Anomaly Detection Result",
+        #     (
+        #         f"GOOD template : {os.path.basename(good_path)}\n"
+        #         f"BAD image     : {os.path.basename(bad_img_path)}\n"
+        #         f"Output folder : {out_dir}\n\n"
+        #         f"Overall similarity : {overall_sim:.10f}\n"
+        #         f"Threshold           : {threshold:.10f}\n"
+        #         f"Result              : {decision}"
+        #     )
+        # )
+    
+    def _handle_anomaly_load(self):
+        """
+        Load-mode anomaly detection:
+
+        - Take the LATEST GOOD image from templates/good
+        - Ask user to select a BAD / defect image (via file dialog)
+        - Ask for threshold
+        - Run GEFS/SEFS template matching
+        - Show overlay in anomaly preview + save to templates/output
+        """
+        from pathlib import Path
+
+        base_dir = _app_base_dir()
+        good_dir = Path(base_dir) / "templates" / "good"
+
+        # 1) Get latest GOOD template
+        good_path = self._get_latest_image_in_folder(good_dir)
+        if not good_path:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No GOOD Template",
+                "No GOOD template image found in:\n"
+                f"{good_dir}\n\n"
+                "Please create a GOOD template first using 'Template Creation'."
+            )
+            return
+
+        # 2) Ask user to choose BAD / defect image
+        start_dir = str(Path(base_dir) / "templates")
+        bad_img_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select BAD / Defect Image",
+            start_dir,
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp);;All Files (*)"
+        )
+
+        # Bring main window back to front after dialog
+        self.raise_()
+        self.activateWindow()
+
+        if not bad_img_path:
+            # User cancelled
+            return
+
+        # 3) Ask for similarity threshold
+        threshold, ok_thr = QtWidgets.QInputDialog.getDouble(
+            self,
+            "Template Threshold",
+            "Enter similarity threshold (0–1):\n"
+            "Blocks with similarity <= threshold are treated as DEFECT.",
+            0.9999995,   # default
+            0.0,
+            1.0,
+            7            # decimals
+        )
+        if not ok_thr:
+            return
+
+        # 4) Show 'Processing...' while running anomaly
+        self.anomalyPreviewLabel.setText("Processing...")
+        QtWidgets.QApplication.processEvents()
+
+        # 5) Run template matching (using existing wrapper)
+        try:
+            overall_sim, overlay_path, decision = self._run_good_bad_template_matching_ui(
+                good_img_path=good_path,
+                bad_img_path=bad_img_path,
+                threshold=threshold,
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Anomaly Detection Error",
+                f"Error during anomaly detection:\n{e}"
+            )
+            return
+
+        # 6) Save overlay into templates/output
+        out_dir = Path(base_dir) / "templates" / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        final_overlay_path = None
+
+        try:
+            if overlay_path and os.path.isfile(overlay_path):
+                dest_overlay = out_dir / f"overlay_{ts}.png"
+                shutil.copy2(overlay_path, dest_overlay)
+                final_overlay_path = str(dest_overlay)
+            else:
+                # Fallback: copy BAD image if no overlay produced
+                dest_overlay = out_dir / f"overlay_{ts}.png"
+                shutil.copy2(bad_img_path, dest_overlay)
+                final_overlay_path = str(dest_overlay)
+        except Exception as e:
+            print("[anomaly load] failed to store overlay:", e)
+            if overlay_path and os.path.isfile(overlay_path):
+                final_overlay_path = overlay_path
+            else:
+                final_overlay_path = bad_img_path
+
+        # 7) Show overlay + status bar text in the anomaly preview
+        try:
+            pm = QtGui.QPixmap(final_overlay_path)
+            if not pm.isNull():
+                pm = pm.scaled(
+                    self.anomalyPreviewLabel.size(),
+                    KeepAspect,
+                    Smooth
+                )
+                # Base overlay
+                self.anomalyPreviewLabel.setPixmap(pm)
+                self.anomalyPreviewLabel.setText("")
+
+                # Draw status strip on a copy
+                status_pixmap = pm.copy()
+                painter = QtGui.QPainter(status_pixmap)
+
+                status_height = 40
+                status_rect = QtCore.QRect(
+                    0,
+                    pm.height() - status_height,
+                    pm.width(),
+                    status_height
+                )
+
+                painter.setBrush(QtGui.QColor(0, 0, 0, 180))
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.drawRect(status_rect)
+
+                is_ng = decision.upper() == "BAD"
+                color = QtGui.QColor(239, 68, 68) if is_ng else QtGui.QColor(34, 197, 94)
+                painter.setPen(color)
+                font = painter.font()
+                font.setPointSize(12)
+                font.setBold(True)
+                painter.setFont(font)
+
+                result_text = f"{decision} | Similarity: {overall_sim:.6f}"
+                painter.drawText(status_rect, QtCore.Qt.AlignCenter, result_text)
+                painter.end()
+
+                # Show image with status text
+                self.anomalyPreviewLabel.setPixmap(status_pixmap)
+
+                # After 3s, keep only the plain overlay (no bar)
+                QtCore.QTimer.singleShot(
+                    3000,
+                    lambda: self.anomalyPreviewLabel.setPixmap(pm)
+                )
+            else:
+                self.anomalyPreviewLabel.setPixmap(QtGui.QPixmap())
+                self.anomalyPreviewLabel.setText("Overlay image could not be loaded.")
+        except Exception as e:
+            print("[anomaly load] failed to show overlay:", e)
+            self.anomalyPreviewLabel.setPixmap(QtGui.QPixmap())
+            self.anomalyPreviewLabel.setText("Error showing overlay.")
+
+
+    def _handle_synthetic_defect(self):
+        """
+        Run synthetic defect creation process.
+        """
+        try:
+            # Import the synthetic defect creation module
+            try:
+                # Adjust the path based on where generate_induce.py is located
+                import sys
+                import os
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                sys.path.append(current_dir)
+                
+                from generate_induce import run_synthetic_defect_creation
+                
+            except ImportError as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Import Error",
+                    f"Cannot import synthetic defect module:\n{e}"
+                )
+                return
+            
+            # Run the synthetic defect creation
+            success, message = run_synthetic_defect_creation(self)
+            
+            if not success:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Synthetic Defect Creation",
+                    message
+                )
+                
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Error",
+                f"Error in synthetic defect creation:\n{e}"
+            )
+
+    def _handle_anomaly_clear(self):
+        """
+        Clear anomaly result and go back to LIVE PREVIEW
+        inside the ANOMALY page only.
+        - Does NOT switch to Live Inspection tab
+        - Does NOT touch good/bad counts
+        """
+        # 1) Clear current image & text
+        self.anomalyPreviewLabel.clear()
+        self.anomalyPreviewLabel.setText("Live preview will appear here")
+
+        # Reset last captured frame (template stays as-is)
+        self._anomaly_last_frame = None
+
+        # 2) Restart live preview timer ONLY for anomaly page
+        self._start_anomaly_preview()
+
+
     def _update_prev_stats(self, stats: dict):
         """Update the statistics display in the previous inspection page."""
         total = stats.get("total", 0)
@@ -1927,6 +3100,131 @@ class MainWindow(QtWidgets.QMainWindow):
             self.prev_last_time.setText(time_str)
         else:
             self.prev_last_time.setText("—")
+    def _start_anomaly_preview(self):
+        """Start periodic camera preview updates on the anomaly page."""
+        if self.anomaly_timer.isActive():
+            return
+
+        # If live capture is not running, pick a camera index for direct grab
+        if not self._capture_running:
+            try:
+                devs = hik_capture.list_devices()
+            except Exception as e:
+                print(f"[anomaly] list_devices error: {e}")
+                devs = []
+
+            if devs:
+                # use first camera for preview
+                self._anomaly_cam_index = devs[0].index
+            else:
+                self._anomaly_cam_index = None
+
+        # Do one immediate update and then start timer
+        self._update_anomaly_preview()
+        self.anomaly_timer.start(1000)  # 1 second refresh
+
+    def _stop_anomaly_preview(self):
+        """Stop anomaly preview timer."""
+        if self.anomaly_timer.isActive():
+            self.anomaly_timer.stop()
+
+    def _update_anomaly_preview(self):
+        """Update the anomaly preview label with the latest camera image and
+        remember it for template creation.
+        """
+        # Case 1: live capture is running – reuse the first card's current pixmap
+        if self._capture_running and self.cards:
+            card = self.cards[0]
+            pm = card.image.pixmap()
+            if pm and not pm.isNull():
+                # Scale for display
+                scaled = pm.scaled(
+                    self.anomalyPreviewLabel.size(),
+                    KeepAspect,
+                    Smooth
+                )
+                self.anomalyPreviewLabel.setPixmap(scaled)
+                self.anomalyPreviewLabel.setText("")
+
+                # Store as grayscale numpy for template saving
+                qimg = pm.toImage().convertToFormat(QtGui.QImage.Format_Grayscale8)
+                w = qimg.width()
+                h = qimg.height()
+                ptr = qimg.bits()
+                ptr.setsize(h * qimg.bytesPerLine())
+                arr = np.frombuffer(ptr, np.uint8).reshape((h, qimg.bytesPerLine()))
+                self._anomaly_last_frame = arr[:, :w].copy()
+
+                return
+
+        # Case 2: standalone one-shot grab from camera using hik_capture
+        cam_idx = self._anomaly_cam_index
+        if cam_idx is None:
+            # Try to discover a camera lazily
+            try:
+                devs = hik_capture.list_devices()
+            except Exception as e:
+                print(f"[anomaly] list_devices error (lazy): {e}")
+                devs = []
+            if not devs:
+                self.anomalyPreviewLabel.setText("No camera detected")
+                self.anomalyPreviewLabel.setPixmap(QtGui.QPixmap())
+                self._anomaly_last_frame = None
+                return
+            cam_idx = devs[0].index
+            self._anomaly_cam_index = cam_idx
+
+        # Pull exposure/gain overrides if we have them
+        exposure = gain = None
+        try:
+            ov = self._mvs_overrides.get(cam_idx) if hasattr(self, "_mvs_overrides") else None
+            if ov:
+                if "ExposureTime" in ov:
+                    exposure = float(ov["ExposureTime"])
+                if "Gain" in ov:
+                    gain = float(ov["Gain"])
+        except Exception as e:
+            print(f"[anomaly] override read error: {e}")
+
+        try:
+            frame = hik_capture.grab_live_frame(
+                index=cam_idx,
+                exposure_us=exposure,
+                gain_db=gain,
+                mirror=False,
+            )
+        except Exception as e:
+            print(f"[anomaly] grab_live_frame error: {e}")
+            frame = None
+
+        if frame is None:
+            self.anomalyPreviewLabel.setText("Camera preview not available")
+            self.anomalyPreviewLabel.setPixmap(QtGui.QPixmap())
+            self._anomaly_last_frame = None
+            return
+
+        # frame is a numpy (H, W) grayscale array
+        self._anomaly_last_frame = frame.copy()
+
+        h, w = frame.shape[:2]
+        qimg = QtGui.QImage(
+            frame.data,
+            w,
+            h,
+            w,  # bytes per line for 8-bit grayscale
+            QtGui.QImage.Format_Grayscale8,
+        ).copy()
+
+        pm = QtGui.QPixmap.fromImage(qimg)
+        pm = pm.scaled(
+            self.anomalyPreviewLabel.size(),
+            KeepAspect,
+            Smooth
+        )
+        self.anomalyPreviewLabel.setPixmap(pm)
+        self.anomalyPreviewLabel.setText("")
+
+
     def apply_theme(self):
         # Apply live UI theme
         self.setStyleSheet(LIVE_QSS)
@@ -2127,9 +3425,9 @@ class MainWindow(QtWidgets.QMainWindow):
         vis = infer.draw_vis(img, dets)
 
         # Save under out_dir/images
-        img_out_dir = os.path.join(out_dir, "images")
-        os.makedirs(img_out_dir, exist_ok=True)
-        save_p = os.path.join(img_out_dir, os.path.basename(image_path))
+        # Save directly under out_dir (which is results/<backend>_op/trial_xxx)
+        os.makedirs(out_dir, exist_ok=True)
+        save_p = os.path.join(out_dir, os.path.basename(image_path))
         cv2.imwrite(save_p, vis)
 
         # Simple NG logic: any detection => NG
@@ -2240,7 +3538,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_capture_finished(self):
         # start sequential inference over the queued images
         self._kick_next_inference()
-        
+        self._capture_running = False
     @QtCore.pyqtSlot(int, str, bool, str)
     def _apply_infer_result(self, cam_index: int, overlay_path: str, is_ng: bool, score_text: str):
         # ---------- UI update ----------
@@ -2419,6 +3717,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_cap_thread") and self._cap_thread is not None:
             self._cap_thread.quit()
             self._cap_thread.wait(2000)
+        self._capture_running = False
 
     def closeEvent(self, event):
         """Stop capture and join the worker thread when the window closes."""
@@ -2576,7 +3875,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._infer_cfg["weights"]     = weights
         self._infer_cfg["num_classes"] = num_classes
         self._infer_cfg["device"]      = "cuda"  # Inference.py will fallback if needed
-        self._infer_cfg["out_dir"]     = tempfile.mkdtemp(prefix="live_infer_")
+
+        # NEW: prepare results/<backend>_op/ip/trial_xxx
+        self._prepare_run_dirs()
+
 
         # Sidebar – don't leave inspection blank
         self.lblInspVal.setText(backend.upper())
@@ -2657,6 +3959,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._cap_thread.finished.connect(self._cap_thread.deleteLater)
 
         self._cap_thread.start()
+        self._capture_running = True
+
 
 
     def _start_folder_mode(self):
@@ -2678,6 +3982,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 1) Ask backend + weights + (optional) num_classes
         if not self._prompt_infer_options():
             return
+        self._prepare_run_dirs()
 
         # 2) Ask for folder containing images
         folder = QtWidgets.QFileDialog.getExistingDirectory(
@@ -2730,17 +4035,34 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _kick_next_inference(self):
         """Start next pending image (if any) and nothing currently running."""
+        # Ensure we have run dirs prepared
         if not self._infer_cfg.get("out_dir"):
-            self._infer_cfg["out_dir"] = tempfile.mkdtemp(prefix="live_infer_")
-        os.makedirs(self._infer_cfg["out_dir"], exist_ok=True)
+            self._prepare_run_dirs()
+
+        out_dir = self._infer_cfg["out_dir"]
+        os.makedirs(out_dir, exist_ok=True)
+
         if self._inflight:
             return
         if not self._pending:
             # nothing left
             return
 
+
         cam_index, img_path = self._pending.popleft()
         self._current_input[cam_index] = img_path
+        # NEW: copy input image into results/..._ip/trial_xxx
+        ip_dir = self._infer_cfg.get("ip_dir")
+        if ip_dir:
+            try:
+                os.makedirs(ip_dir, exist_ok=True)
+                dest_path = os.path.join(ip_dir, os.path.basename(img_path))
+                # avoid overwriting if already copied
+                if not os.path.exists(dest_path):
+                    shutil.copy2(img_path, dest_path)
+            except Exception as e:
+                print("[live] failed to copy input image:", e)
+
         # safety: inference config must be present
         if not self._infer_cfg.get("backend") or not self._infer_cfg.get("weights"):
             QtWidgets.QMessageBox.critical(self, "Inference Not Configured",
@@ -2790,7 +4112,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._infer_cfg["weights"]     = weights
         self._infer_cfg["num_classes"] = num_classes  # None for YOLO
         self._infer_cfg["device"]      = "cuda"
-        self._infer_cfg["out_dir"]     = tempfile.mkdtemp(prefix="live_infer_")
+
+        # NEW: prepare results/<backend>_op/ip/trial_xxx
+        self._prepare_run_dirs()
+
 
         self.lblInspVal.setText(backend.upper())
 

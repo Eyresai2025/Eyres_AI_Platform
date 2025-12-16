@@ -1174,6 +1174,7 @@ class StepCamSettings(QtWidgets.QWidget):
 
         - Uses MVS index (from StepDevices)
         - Stores exposure/gain overrides in self._owner._mvs_overrides[idx]
+        - Reads camera limits for Exposure/Gain and clamps values
         - Grabs one test frame (to get resolution & show first preview)
         - Starts QTimer if start_preview=True
         """
@@ -1216,13 +1217,44 @@ class StepCamSettings(QtWidgets.QWidget):
 
         self.lbl_cam.setText(f"MVS IDX {idx}")
 
+        # -------------------------------
+        # ✅ Read Exposure/Gain limits
+        # -------------------------------
+        exp_lo, exp_hi = 10.0, 1_000_000.0   # fallback UI range (µs)
+        gain_lo, gain_hi = 0.0, 36.0         # fallback UI range (dB)
+
+        try:
+            import hik_capture as hkc
+            lims = hkc.read_gain_exposure_limits(idx) or {}
+            if "ExposureTime" in lims:
+                exp_lo, exp_hi, _cur = lims["ExposureTime"]
+                self.spin_exp.setRange(float(exp_lo), float(exp_hi))
+            else:
+                self.spin_exp.setRange(float(exp_lo), float(exp_hi))
+
+            if "Gain" in lims:
+                gain_lo, gain_hi, _cur = lims["Gain"]
+                self.spin_gain.setRange(float(gain_lo), float(gain_hi))
+            else:
+                self.spin_gain.setRange(float(gain_lo), float(gain_hi))
+        except Exception as e:
+            print(f"[cam_settings] read limits failed IDX {idx}: {e}")
+            self.spin_exp.setRange(float(exp_lo), float(exp_hi))
+            self.spin_gain.setRange(float(gain_lo), float(gain_hi))
+
         # Load / init overrides for this MVS index (only Exp/Gain)
         if not hasattr(self._owner, "_mvs_overrides"):
             self._owner._mvs_overrides = {}
         ov = self._owner._mvs_overrides.setdefault(idx, {})
 
+        # Read saved values (Mongo), then clamp to camera limits
         cur_exp = float(ov.get("ExposureTime", 20000.0))  # 20 ms default
         cur_gain = float(ov.get("Gain", 0.0))
+
+        # ✅ clamp
+        cur_exp = max(float(exp_lo), min(float(exp_hi), cur_exp))
+        cur_gain = max(float(gain_lo), min(float(gain_hi), cur_gain))
+
         ov["ExposureTime"] = cur_exp
         ov["Gain"] = cur_gain
 
@@ -1236,7 +1268,7 @@ class StepCamSettings(QtWidgets.QWidget):
             self.spin_exp.blockSignals(False)
             self.spin_gain.blockSignals(False)
 
-        # Try one test grab to find resolution and show a first frame
+        # Try one test grab to find resolution and show a first preview frame
         test_img = None
         try:
             import hik_capture as hkc
@@ -1263,7 +1295,7 @@ class StepCamSettings(QtWidgets.QWidget):
             self.spin_width.blockSignals(False)
             self.spin_height.blockSignals(False)
 
-            self.spin_width.setEnabled(False)   # MVS ROI not changeable via this UI (for now)
+            self.spin_width.setEnabled(False)
             self.spin_height.setEnabled(False)
             self.edit_pixfmt.setText("Mono8")
             self.edit_pixfmt.setEnabled(False)
@@ -1292,6 +1324,7 @@ class StepCamSettings(QtWidgets.QWidget):
             self.btn_preview_toggle.setText("Stop Preview")
         else:
             self.btn_preview_toggle.setText("Start Preview")
+
 
 
 

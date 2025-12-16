@@ -1572,13 +1572,10 @@ class MainWindow(QMainWindow):
 
         result = box.exec_()   # PyQt5
         return result == QMessageBox.Yes
- 
+
     def _on_live_clicked(self):
         """
-        Open the Live pipeline window (from live.py).
-
-        - If user says cameras are connected -> camera live mode
-        - If user says NO -> local folder inference mode
+        Open the Live pipeline window (from live.py) and directly switch to Anomaly Detection page.
         """
         try:
             # ensure current folder is on sys.path
@@ -1595,59 +1592,152 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self._live_window is None:
+        # ----- FIX: If window exists, bring it to front -----
+        if self._live_window is not None and hasattr(self._live_window, 'isVisible'):
             try:
-                self._live_window = LiveWindow()
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Live Error",
-                    f"Failed to create live window:\n{e}",
-                )
-                self._live_window = None
+                # Restore if minimized
+                if self._live_window.isMinimized():
+                    self._live_window.showNormal()
+                
+                # Bring to front
+                self._live_window.raise_()
+                self._live_window.activateWindow()
+                
+                # Ensure it's shown
+                self._live_window.show()
+                
+                # Switch to anomaly page
+                if hasattr(self._live_window, 'btnAnomalyTab'):
+                    self._live_window.btnAnomalyTab.click()
+                
+                print("[Live] Existing window brought to front")
                 return
+            except Exception as e:
+                print(f"[Live] Error with existing window: {e}")
+                # If error, create new window
+                self._live_window = None
 
-        # Set window properties BEFORE showing
-        self._live_window.setMinimumSize(1366, 768)
-        self._live_window.resize(1300, 700)
-        
-        # Show and activate the window FIRST
+        # Create new window
+        try:
+            self._live_window = LiveWindow()
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Live Error",
+                f"Failed to create live window:\n{e}",
+            )
+            self._live_window = None
+            return
+
+        # Show window
         self._live_window.showMaximized()
         self._live_window.raise_()
         self._live_window.activateWindow()
         
-        # Force the window to stay on top during configuration
-        self._live_window.setWindowFlags(self._live_window.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
-        self._live_window.show()
+        # Switch to anomaly page after delay
+        QtCore.QTimer.singleShot(200, lambda: self._switch_to_anomaly())
 
-        # Small delay to ensure window is fully visible
-        QtCore.QTimer.singleShot(100, self._start_live_config)
+    def _switch_to_anomaly(self):
+        """Switch to anomaly page."""
+        if not hasattr(self, '_live_window') or self._live_window is None:
+            return
+        
+        try:
+            if hasattr(self._live_window, 'btnAnomalyTab'):
+                self._live_window.btnAnomalyTab.click()
+                print("[Live] Switched to Anomaly Detection")
+        except Exception as e:
+            print(f"[Live] Error switching to anomaly: {e}")
+ 
+    # def _on_live_clicked(self):
+    #     """
+    #     Open the Live pipeline window (from live.py).
+
+    #     - If user says cameras are connected -> camera live mode
+    #     - If user says NO -> local folder inference mode
+    #     """
+    #     try:
+    #         # ensure current folder is on sys.path
+    #         here = os.path.dirname(__file__)
+    #         if here not in sys.path:
+    #             sys.path.append(here)
+
+    #         from live import MainWindow as LiveWindow
+    #     except Exception as e:
+    #         QMessageBox.critical(
+    #             self,
+    #             "Live Error",
+    #             f"Cannot import live pipeline:\n{e}",
+    #         )
+    #         return
+
+    #     if self._live_window is None:
+    #         try:
+    #             self._live_window = LiveWindow()
+    #         except Exception as e:
+    #             QMessageBox.critical(
+    #                 self,
+    #                 "Live Error",
+    #                 f"Failed to create live window:\n{e}",
+    #             )
+    #             self._live_window = None
+    #             return
+
+    #     # Set window properties BEFORE showing
+    #     self._live_window.setMinimumSize(1366, 768)
+    #     self._live_window.resize(1300, 700)
+        
+    #     # Show and activate the window FIRST
+    #     self._live_window.showMaximized()
+    #     self._live_window.raise_()
+    #     self._live_window.activateWindow()
+        
+    #     # Force the window to stay on top during configuration
+    #     self._live_window.setWindowFlags(self._live_window.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+    #     self._live_window.show()
+
+    #     # Small delay to ensure window is fully visible
+    #     QtCore.QTimer.singleShot(100, self._start_live_config)
 
     def _start_live_config(self):
         """Start the configuration after the window is fully visible"""
         if not hasattr(self, '_live_window') or self._live_window is None:
             return
-            
-        # ---- NEW: ask which mode to use ----
-        reply = QMessageBox.question(
-            self._live_window,
-            "Start Live",
-            "Are Hikrobot cameras connected?\n\n"
-            "Yes  → use cameras\n"
-            "No   → run on local image folder",
-            QMessageBox.Yes | QMessageBox.No,
-        )
 
-        if reply == QMessageBox.Yes:
-            # camera mode (this will itself fall back to folder-mode
-            # if no devices are actually found)
+        # Custom message box with 3 options
+        mbox = QMessageBox(self._live_window)
+        mbox.setWindowTitle("Start Live")
+        mbox.setText(
+            "How do you want to run Live?\n\n"
+            "Yes          → Hikrobot cameras (continuous live)\n"
+            "No           → Local image folder (offline)\n"
+            "Start Capture → Manual one-shot capture per click"
+        )
+        mbox.setIcon(QMessageBox.Question)
+
+        btn_yes = mbox.addButton("Yes", QMessageBox.YesRole)
+        btn_no = mbox.addButton("No", QMessageBox.NoRole)
+        btn_cap = mbox.addButton("Start Capture", QMessageBox.ActionRole)
+
+        mbox.exec_()
+        clicked = mbox.clickedButton()
+
+        if clicked is btn_yes:
+            # continuous camera mode
             self._live_window._start_live_flow()
-        else:
+        elif clicked is btn_no:
             # offline folder mode
             self._live_window._start_folder_mode()
+        elif clicked is btn_cap:
+            # NEW: manual capture mode
+            self._live_window.start_manual_capture_mode()
+        else:
+            return  # dialog closed
 
         # Remove the always-on-top flag after configuration
-        self._live_window.setWindowFlags(self._live_window.windowFlags() & ~QtCore.Qt.WindowStaysOnTopHint)
+        self._live_window.setWindowFlags(
+            self._live_window.windowFlags() & ~QtCore.Qt.WindowStaysOnTopHint
+        )
         self._live_window.show()
 
         # optional toast

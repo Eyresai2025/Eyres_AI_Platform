@@ -198,12 +198,26 @@ def _gige_set_optimal_packet_size(cam: MvCamera):
 def _configure(cam: MvCamera, exposure_us: Optional[float], gain_db: Optional[float]):
     cam.MV_CC_SetEnumValue("AcquisitionMode", 2)  # Continuous
     cam.MV_CC_SetEnumValue("TriggerMode", 0)      # Off
-    cam.MV_CC_SetEnumValue("ExposureAuto", 0)     # Manual
+
+    # Manual exposure/gain
+    try:
+        cam.MV_CC_SetEnumValue("ExposureAuto", 0)
+    except Exception:
+        pass
+    try:
+        cam.MV_CC_SetEnumValue("GainAuto", 0)
+    except Exception:
+        pass
+
     _sdk_ok(cam.MV_CC_SetEnumValue("PixelFormat", PIX_MONO8), "Set PixelFormat Mono8")
+
+    # ✅ Clamp to camera limits before setting
     if exposure_us is not None:
-        _sdk_ok(cam.MV_CC_SetFloatValue("ExposureTime", float(exposure_us)), "ExposureTime")
+        _set_float_clamped(cam, "ExposureTime", float(exposure_us), where="ExposureTime")
+
     if gain_db is not None:
-        _sdk_ok(cam.MV_CC_SetFloatValue("Gain", float(gain_db)), "Gain")
+        _set_float_clamped(cam, "Gain", float(gain_db), where="Gain")
+
 
 def _grab_loop(cam: MvCamera, out_dir: str, frames: int, mirror: bool,
                progress_cb: Optional[Callable[[int, str], None]] = None):
@@ -294,55 +308,148 @@ def grab_live_frame(
     mirror: bool = False,
 ) -> Optional[np.ndarray]:
     """
-    Simple 'live' grab helper for UI preview.
-
-    Implementation:
-      - Uses existing capture_multi() to grab 1 frame
-      - Writes into a temp folder
-      - Reads the first image back as a Mono8 numpy array (H, W) or None
+    Fast UI preview grab:
+      - open camera
+      - configure (with clamped Gain/ExposureTime)
+      - start grabbing
+      - read 1 frame
+      - close camera
+      - return Mono8 numpy array (H,W) or None
     """
+    cam = None
     try:
-        # 1) Create temporary root folder
-        with tempfile.TemporaryDirectory() as tmp_root:
-            # 2) Use your existing capture_multi
-            #    indices: [index] -> single camera
-            #    frames : 1       -> single frame
-            #    base_out: tmp_root
-            #    progress_cb: None (no need for logs here)
-            try:
-                capture_multi(
-                    indices=[index],
-                    frames=1,
-                    base_out=tmp_root,
-                    mirror=mirror,
-                    exposure_us=exposure_us,
-                    gain_db=gain_db,
-                    progress_cb=None,
-                )
-            except Exception as e:
-                print(f"[hik_capture] capture_multi error in grab_live_frame for IDX {index}: {e}")
+        devs = list_devices()
+        if index < 0 or index >= len(devs):
+            return None
+
+        d = devs[index]
+        cam = _open_camera(d.pinfo)
+
+        try:
+            _gige_set_optimal_packet_size(cam)
+        except Exception:
+            pass
+
+        # ✅ configure with clamping
+        _configure(cam, exposure_us, gain_db)
+
+        # Prepare buffer
+        ival = MVCC_INTVALUE()
+        _sdk_ok(cam.MV_CC_GetIntValue("PayloadSize", ival), "Get PayloadSize")
+        buf = (ctypes.c_ubyte * ival.nCurValue)()
+        info = MV_FRAME_OUT_INFO_EX()
+
+        _sdk_ok(cam.MV_CC_StartGrabbing(), "StartGrabbing")
+        try:
+            ret = cam.MV_CC_GetOneFrameTimeout(buf, ctypes.sizeof(buf), info, 1000)
+            if ret != MV_OK:
                 return None
 
-            # 3) Find first image file inside tmp_root (there will be a subfolder cam_<index>)
-            pattern = os.path.join(tmp_root, "**", "*.*")
-            files = [
-                f for f in glob.glob(pattern, recursive=True)
-                if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"))
-            ]
+            raw = memoryview(buf)[:info.nFrameLen]
 
-            if not files:
+            if info.enPixelType == PIX_MONO8:
+                img = np.frombuffer(raw, dtype=np.uint8).reshape(info.nHeight, info.nWidth).copy()
+            elif info.enPixelType == PIX_BGR8:
+                bgr = np.frombuffer(raw, dtype=np.uint8).reshape(info.nHeight, info.nWidth, 3)
+                img = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            else:
                 return None
 
-            files.sort(key=os.path.getmtime)
-            img_path = files[-1]
-
-            # 4) Read as grayscale
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                return None
-
+            if mirror:
+                img = cv2.flip(img, 1)
             return img
 
+        finally:
+            try:
+                cam.MV_CC_StopGrabbing()
+            except Exception:
+                pass
+
     except Exception as e:
-        print(f"[hik_capture] grab_live_frame error for IDX {index}: {e}")
+        print(f"[hik_capture] grab_live_frame error IDX {index}: {e}")
         return None
+
+    finally:
+        if cam is not None:
+            try: cam.MV_CC_CloseDevice()
+            except Exception: pass
+            try: cam.MV_CC_DestroyHandle()
+            except Exception: pass
+
+def _floatvalue_to_tuple(fv) -> Optional[tuple]:
+    """
+    MVCC_FLOATVALUE typically has fMin, fMax, fCurValue.
+    Some wrapper variants may name fields differently; we try safely.
+    """
+    try:
+        fmin = float(getattr(fv, "fMin"))
+        fmax = float(getattr(fv, "fMax"))
+        fcur = float(getattr(fv, "fCurValue"))
+        return (fmin, fmax, fcur)
+    except Exception:
+        return None
+
+
+def _get_float_limits(cam: MvCamera, name: str) -> Optional[Tuple[float, float, float]]:
+    """
+    Returns (min, max, cur) for a float node, or None if not supported.
+    """
+    try:
+        fv = MVCC_FLOATVALUE()
+        code = cam.MV_CC_GetFloatValue(name, fv)
+        if code != MV_OK:
+            return None
+        t = _floatvalue_to_tuple(fv)
+        return t
+    except Exception:
+        return None
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
+
+def _set_float_clamped(cam: MvCamera, name: str, value: float, where: str = "") -> float:
+    """
+    Clamp value to node limits (if available) and set it.
+    Returns the value actually applied.
+    """
+    v = float(value)
+    lim = _get_float_limits(cam, name)
+    if lim is not None:
+        lo, hi, _cur = lim
+        v = _clamp(v, lo, hi)
+
+    code = cam.MV_CC_SetFloatValue(name, v)
+    if code != MV_OK:
+        raise RuntimeError(f"{where} SetFloat({name}={v}) failed: 0x{code:X}")
+    return v
+
+def read_gain_exposure_limits(index: int) -> dict:
+    """
+    Returns: {"ExposureTime": (min,max,cur), "Gain": (min,max,cur)} for a camera index.
+    """
+    cam = None
+    try:
+        devs = list_devices()
+        d = devs[index]
+        cam = _open_camera(d.pinfo)
+
+        out = {}
+        exp = _get_float_limits(cam, "ExposureTime")
+        if exp: out["ExposureTime"] = exp
+
+        gain = _get_float_limits(cam, "Gain")
+        if gain: out["Gain"] = gain
+
+        return out
+    finally:
+        if cam is not None:
+            try: cam.MV_CC_CloseDevice()
+            except Exception: pass
+            try: cam.MV_CC_DestroyHandle()
+            except Exception: pass
